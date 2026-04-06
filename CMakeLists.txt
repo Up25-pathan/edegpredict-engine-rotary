@@ -20,6 +20,12 @@ set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --extended-lambda --expt-relaxed-const
 # Dependencies
 # =============================================================================
 
+# Ensure vcpkg prefix path is explicitly included as a hint for sub-dependencies
+if(DEFINED CMAKE_TOOLCHAIN_FILE)
+    list(APPEND CMAKE_PREFIX_PATH "C:/vcpkg/installed/x64-windows")
+    set(VCPKG_TARGET_TRIPLET x64-windows)
+endif()
+
 # Eigen3 for linear algebra (OPTIONAL - not actually used in source code)
 find_package(Eigen3 QUIET)
 if(Eigen3_FOUND)
@@ -29,11 +35,15 @@ else()
 endif()
 
 # HDF5 for data export (optional)
-find_package(HDF5 COMPONENTS CXX)
+find_package(HDF5 COMPONENTS CXX QUIET)
+if (HDF5_FOUND)
+    message(STATUS "HDF5 found: ${HDF5_LIBRARIES}")
+endif()
 
-# JSON - using nlohmann/json (header-only)
-# Expected to be in include/json.hpp
-# Download from: https://github.com/nlohmann/json/releases
+# Freetype (REQUIRED by OpenCASCADE)
+# Explicit discovery to help vcpkg wrappers
+find_package(Freetype REQUIRED)
+message(STATUS "Freetype found: ${FREETYPE_INCLUDE_DIRS}")
 
 # OpenCASCADE for CAD geometry (VCPKG integrated)
 find_package(OpenCASCADE CONFIG REQUIRED)
@@ -75,9 +85,13 @@ set(CPP_SOURCES
     src/OptimizationManager.cpp
     src/MillingStrategy.cpp
     src/DrillingStrategy.cpp
+    src/BoringStrategy.cpp
+    src/ReamingStrategy.cpp
+    src/ThreadingStrategy.cpp
     src/MachiningStrategyFactory.cpp
     src/SurfaceRoughnessPredictor.cpp
     src/ResidualStressAnalyzer.cpp
+    src/SurfaceReconstructor.cpp
 )
 
 set(CUDA_SOURCES

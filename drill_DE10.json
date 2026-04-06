@@ -1,0 +1,70 @@
+{
+    "simulation_name": "Sandvik CoroDrill 860-GM DE10 Test",
+    "machining_type": "drilling",
+    "simulation_parameters": {
+        "num_steps": 20000,
+        "time_step_duration_s": 1e-6,
+        "output_interval_steps": 100,
+        "preview_setup": true
+    },
+    "machining_parameters": {
+        "rpm": 2550.0,
+        "feed_rate_mm_min": 382.0,
+        "depth_of_cut_mm": 25.0
+    },
+    "file_paths": {
+        "tool_geometry": "sandvik_de10.stp",
+        "workpiece_geometry": "",
+        "gcode_file": "drill_DE10.gcode",
+        "output_directory": "output_DE10",
+        "output_results": "results_DE10.json"
+    },
+    "workpiece_geometry": {
+        "shape": "box",
+        "width_mm": 50.0,
+        "height_mm": 50.0,
+        "depth_mm": 50.0
+    },
+    "material_properties": {
+        "name": "Steel 4140",
+        "density_kg_m3": 7850.0,
+        "youngs_modulus_Pa": 210e9,
+        "johnson_cook_plasticity": {
+            "A_yield_strength_MPa": 595.0,
+            "B_strain_hardening_MPa": 580.0,
+            "n_strain_hardening_exp": 0.133,
+            "C_strain_rate_sensitivity": 0.023,
+            "m_thermal_softening_exp": 1.03
+        },
+        "yield_strength_MPa": 595.0,
+        "failure_strain": 0.3
+    },
+    "tool_material": {
+        "name": "Tungsten Carbide (Sandvik Grade)",
+        "density_kg_m3": 15000.0,
+        "youngs_modulus_GPa": 600.0,
+        "poissons_ratio": 0.22,
+        "specific_heat_J_kgK": 200.0,
+        "thermal_conductivity_W_mK": 80.0,
+        "melting_point_C": 2870.0,
+        "yield_strength_GPa": 4.5,
+        "coating": "TiAlN",
+        "coating_thickness_um": 4.0,
+        "usui_wear": {
+            "A": 1.2e-11,
+            "B": 1050.0
+        }
+    },
+    "machine_setup": {
+        "G54": [0.0, 0.0, 0.0],
+        "tool_length_offset_mm": 0.0,
+        "auto_align_tool_tip": true,
+        "fixture_layer_thickness_mm": 5.0
+    },
+    "sph_parameters": {
+        "smoothing_radius_m": 0.0004,
+        "max_particles": 2000000,
+        "lod_enabled": true,
+        "damage_enabled": true
+    }
+}
