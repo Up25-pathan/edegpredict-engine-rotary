@@ -298,6 +298,28 @@ __global__ void markSolidFromParticlesKernel(
     }
 }
 
+__global__ void mapHeatSourcesKernel(
+    float* heatSource, const float* nodePos, const float* nodeTemp, int numNodes,
+    int nx, int ny, int nz, float dx, float originX, float originY, float originZ) {
+    
+    int pid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (pid >= numNodes) return;
+    
+    float px = nodePos[pid * 3 + 0];
+    float py = nodePos[pid * 3 + 1];
+    float pz = nodePos[pid * 3 + 2];
+    
+    int i = (int)((px - originX) / dx);
+    int j = (int)((py - originY) / dx);
+    int k = (int)((pz - originZ) / dx);
+    
+    if (i >= 0 && i < nx && j >= 0 && j < ny && k >= 0 && k < nz) {
+        int idx = i + j * nx + k * nx * ny;
+        // Positive float atomicMax behavior
+        atomicMax((int*)&heatSource[idx], __float_as_int(nodeTemp[pid]));
+    }
+}
+
 // Reduction kernel for max velocity
 __global__ void findMaxVelocityKernel(
     const float* u, const float* v, const float* w,
@@ -631,15 +653,34 @@ void CFDSolverGPU::setSolidObstacles(const double* particlePositions, int numPar
     cudaFree(d_particlePos);
 }
 
-void CFDSolverGPU::setHeatSources(const double* nodeTemperatures, int numNodes) {
-    if (!m_isInitialized || !nodeTemperatures) return;
+void CFDSolverGPU::setHeatSources(const double* nodeTemperatures, const double* nodePositions, int numNodes) {
+    if (!m_isInitialized || !nodeTemperatures || !nodePositions || numNodes == 0) return;
+    
+    cudaMemset(d_heatSource, 0, m_totalCells * sizeof(float));
     
     std::vector<float> fTemp(numNodes);
     for (int i = 0; i < numNodes; ++i) fTemp[i] = (float)nodeTemperatures[i];
     
-    cudaMemcpy(d_heatSource, fTemp.data(), 
-               std::min((int)numNodes, m_totalCells) * sizeof(float), 
-               cudaMemcpyHostToDevice);
+    std::vector<float> fPos(numNodes * 3);
+    for (int i = 0; i < numNodes * 3; ++i) fPos[i] = (float)nodePositions[i];
+    
+    float* d_nodeTemp;
+    float* d_nodePos;
+    cudaMalloc(&d_nodeTemp, numNodes * sizeof(float));
+    cudaMalloc(&d_nodePos, numNodes * 3 * sizeof(float));
+    
+    cudaMemcpy(d_nodeTemp, fTemp.data(), numNodes * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_nodePos, fPos.data(), numNodes * 3 * sizeof(float), cudaMemcpyHostToDevice);
+    
+    int threads = 256;
+    int blocks = (numNodes + threads - 1) / threads;
+    mapHeatSourcesKernel<<<blocks, threads, 0, m_stream>>>(
+        d_heatSource, d_nodePos, d_nodeTemp, numNodes,
+        m_params.nx, m_params.ny, m_params.nz, m_params.dx,
+        0.0f, 0.0f, 0.0f);
+        
+    cudaFree(d_nodeTemp);
+    cudaFree(d_nodePos);
 }
 
 Vec3 CFDSolverGPU::getVelocityAt(const Vec3& pos) const {

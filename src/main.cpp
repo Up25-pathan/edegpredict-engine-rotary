@@ -345,8 +345,8 @@ int main(int argc, char* argv[]) {
             if (!workpieceFromCAD) {
                 if (useCylinder) {
                     // Config-driven or default dimensions
-                    double radius = wpGeo.radiusMm > 0 ? wpGeo.radiusMm / 1000.0 : 0.02;
-                    double length = wpGeo.lengthMm > 0 ? wpGeo.lengthMm / 1000.0 : 0.05;
+                    double radius = wpGeo.radiusMm > 0 ? wpGeo.radiusMm / 1000.0 : 0.003;
+                    double length = wpGeo.lengthMm > 0 ? wpGeo.lengthMm / 1000.0 : 0.005;
                     // Center moved down so top of cylinder is at Z=0 (CNC G54 origin)
                     Vec3 center(0.0, 0.0, -length / 2.0); 
                     sphSolver->initializeCylindricalWorkpiece(center, radius, length, spacing, 2);
@@ -354,9 +354,9 @@ int main(int argc, char* argv[]) {
                               << "mm L=" << length*1000 << "mm" << std::endl;
                 } else {
                     // Config-driven or default box dimensions
-                    double sizeX = wpGeo.widthMm > 0 ? wpGeo.widthMm / 1000.0 : 0.05;
-                    double sizeY = wpGeo.heightMm > 0 ? wpGeo.heightMm / 1000.0 : 0.02;
-                    double sizeZ = wpGeo.depthMm > 0 ? wpGeo.depthMm / 1000.0 : 0.02;
+                    double sizeX = wpGeo.widthMm > 0 ? wpGeo.widthMm / 1000.0 : 0.008;
+                    double sizeY = wpGeo.heightMm > 0 ? wpGeo.heightMm / 1000.0 : 0.008;
+                    double sizeZ = wpGeo.depthMm > 0 ? wpGeo.depthMm / 1000.0 : 0.005;
                     // Top of box at Z=0
                     Vec3 workMin(-sizeX/2, -sizeY/2, -sizeZ);
                     Vec3 workMax( sizeX/2,  sizeY/2,  0.0);
@@ -372,14 +372,21 @@ int main(int argc, char* argv[]) {
             if (!config.getFilePaths().toolGeometry.empty()) {
                 if (geoLoader.load(config.getFilePaths().toolGeometry, toolMesh)) {
                     GeometryLoader::scaleMesh(toolMesh, 0.001); // mm → m
+                    std::cout << "[Main] Tool geometry loaded from CAD: "
+                              << toolMesh.nodeCount() << " nodes, "
+                              << toolMesh.triangleCount() << " triangles" << std::endl;
                 } else {
-                    std::cerr << "[Warning] Tool geometry load failed: "
-                              << geoLoader.getLastError() << std::endl;
+                    // The config validator already confirmed the file exists,
+                    // so if we get here it's a format/OCC parsing failure.
+                    throw std::runtime_error(
+                        "[FATAL] Failed to load tool geometry '" +
+                        config.getFilePaths().toolGeometry + "': " +
+                        geoLoader.getLastError() +
+                        ". Fix the CAD file or check OpenCASCADE installation.");
                 }
-            }
-
-            // Parametric fallback when no geometry file
-            if (toolMesh.nodes.empty()) {
+            } else {
+                // No tool geometry path — only reached when Config validation is
+                // explicitly relaxed. Generate parametric mesh as debug fallback.
                 generateParametricToolMesh(toolMesh, config);
             }
             
@@ -426,6 +433,19 @@ int main(int argc, char* argv[]) {
             
             // Now that Mesh is perfectly aligned to world, initialize physics!
             femSolver->initializeFromMesh(toolMesh);
+
+            // *** NEW: offset tool tip to be just above the workpiece surface ***
+            // Without G-Code the workpiece top is at Z=0 and the tool tip is at Z=0.
+            // They are in immediate contact at T=0.  Offset by one smoothing radius
+            // so the first timestep produces a well-defined first-contact event.
+            {
+                // safeOffset must be > contactRadius (= h) to avoid step-0 contact.
+                // contactRadius = 1.0 * h, so we offset by 1.5*h to give a clean approach.
+                double safeOffset = sphCfg.smoothingRadius * 1.5;
+                std::cout << "[Main] Offsetting tool tip by +" << safeOffset * 1000
+                          << " mm to avoid T=0 hard contact" << std::endl;
+                femSolver->translateMesh(0.0, 0.0, safeOffset);
+            }
             
             // ------------------------------------------------------------------
             // === ANCHORED PHYSICS: Phase D Spindle Dynamics Setup ===
@@ -451,8 +471,15 @@ int main(int argc, char* argv[]) {
             // ------------------------------------------------------------------
             ContactSolver contactSolver;
             ContactConfig  contactCfg;
-            contactCfg.contactRadius       = sphCfg.smoothingRadius * 1.5;
-            contactCfg.contactStiffness    = 1e11;
+            // contactRadius = 1.0 × h (one smoothing radius = standard SPH contact zone)
+            // Using 1.5×h was too large: particles far from the tool still received forces,
+            // causing 22 contacts at step 0 and immediate thermal runaway.
+            contactCfg.contactRadius = sphCfg.smoothingRadius * 1.0;
+            // k = E* × contactRadius  (reduced modulus, Ti-64 vs Carbide)
+            // E* ≈ 1/(((1-v1²)/E1) + ((1-v2²)/E2))  ≈ 80 GPa
+            // contactRadius ≈ smoothingRadius * 1.5
+            double E_reduced = 80e9;
+            contactCfg.contactStiffness = E_reduced * sphCfg.smoothingRadius * 1.5;
             contactCfg.frictionCoefficient = 0.3;
             contactSolver.initialize(sphSolver.get(), femSolver.get(), contactCfg);
 

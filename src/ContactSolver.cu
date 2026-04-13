@@ -10,6 +10,7 @@
 #include <thrust/device_ptr.h>
 #include <thrust/fill.h>
 #include <iostream>
+#include <iomanip>
 #include <algorithm>
 
 namespace edgepredict {
@@ -35,71 +36,83 @@ __global__ void bruteForceContactKernel(
     if (particle.status == ParticleStatus::INACTIVE ||
         particle.status == ParticleStatus::FIXED_BOUNDARY) return;
 
-    double px = particle.x, py = particle.y, pz = particle.z;
     double totalFx = 0, totalFy = 0, totalFz = 0;
     double heatGen  = 0;
     bool   hasContact = false;
+    // Accumulate total raw heat destined for this particle across ALL node contacts.
+    // Temperature is applied ONCE after the loop — NOT per node — to prevent
+    // dense drill-tip nodes from multiplying ΔT by N_nodes × 200°C.
+    double totalHeatToParticle = 0.0;
 
     for (int j = 0; j < numNodes; ++j) {
         FEMNodeGPU& node = nodes[j];
         if (node.status == NodeStatus::FAILED) continue;
 
-        double dx_pn = px - node.x;
-        double dy_pn = py - node.y;
-        double dz_pn = pz - node.z;
-        double dist  = sqrt(dx_pn * dx_pn + dy_pn * dy_pn + dz_pn * dz_pn);
+        double dx = particle.x - node.x;
+        double dy = particle.y - node.y;
+        double dz = particle.z - node.z;
+        double dist = sqrt(dx * dx + dy * dy + dz * dz);
 
         if (dist < contactRadius && dist > 1e-12) {
             hasContact = true;
 
             double penetration = contactRadius - dist;
-            double nx = dx_pn / dist;
-            double ny = dy_pn / dist;
-            double nz = dz_pn / dist;
+            double nx = dx / dist;
+            double ny = dy / dist;
+            double nz = dz / dist;
 
-            // Hertzian contact force
-            double fn = contactStiffness * penetration * penetration;
+            // ─────────────────────────────────────────────────────────────
+            // FIX: LINEAR penalty instead of Hertz (fn = k * d not k * d²)
+            //
+            // Choose k so that the natural frequency of the contact spring
+            // is much higher than the simulation frequency but the force
+            // remains within impulse bounds:
+            //   k_safe = m_particle / (dt^2 * safety_factor)
+            //
+            // contactStiffness is now passed as a "material stiffness" hint
+            // (E * r ~ 200e9 * 1e-4 = 2e7 N/m), but we always cap per
+            // the impulse limit so there is no explosion.
+            // ─────────────────────────────────────────────────────────────
+            double fn = contactStiffness * penetration;  // LINEAR
 
-            // Anti-explosion cap (Impulse limit):
-            // Maximum force that can push the particle back out of the boundary without 
-            // overshooting in a single explicit timestep. F = m * d / dt^2
-            double maxFn = (particle.mass * penetration) / (dt * dt);
-            if (fn > maxFn) {
-                fn = maxFn;
-            }
+            // Impulse cap: max force that resolves penetration in one step
+            // without overshoot.  F_max = m * penetration / dt^2  (old Hertz cap)
+            // Better impulse cap: F_max = m * (contactRadius / dt) / dt
+            // = m * contactRadius / dt^2
+            double maxFn = (particle.mass * contactRadius) / (dt * dt + 1e-30);
+            if (fn > maxFn) fn = maxFn;
 
             // Relative velocity
             double relVx = particle.vx - node.vx;
             double relVy = particle.vy - node.vy;
             double relVz = particle.vz - node.vz;
+            double vn    = relVx * nx + relVy * ny + relVz * nz;
 
-            // Normal component
-            double vn = relVx * nx + relVy * ny + relVz * nz;
+            // Velocity damping in normal direction (prevent bouncing)
+            // Restitution coefficient ~ 0.1 for metal-on-metal impact
+            if (vn < 0) {
+                double dampFn = -0.3 * particle.mass * vn / (dt + 1e-30);
+                fn = fmax(fn + dampFn, 0.0);
+            }
 
-            // Tangential component
+            // Tangential (friction)
             double vtx = relVx - vn * nx;
             double vty = relVy - vn * ny;
             double vtz = relVz - vn * nz;
             double vt  = sqrt(vtx * vtx + vty * vty + vtz * vtz);
 
-            // Temperature-dependent friction model:
-            // At low temp: Coulomb friction (mu * Fn)
-            // At high temp/pressure: transitions to shear-limited friction
-            // tau_max = k (shear yield stress) ≈ sigma_y / sqrt(3)
+            // Temperature-dependent friction (Zorev model)
             double T_contact = 0.5 * (particle.temperature + node.temperature);
-            double T_ratio = fmin(1.0, fmax(0.0, (T_contact - 200.0) / 600.0));
-            // Friction coefficient decreases with temperature (Zorev model)
-            double mu_eff = friction * (1.0 - 0.4 * T_ratio);
+            double T_ratio   = fmin(1.0, fmax(0.0, (T_contact - 200.0) / 600.0));
+            double mu_eff    = friction * (1.0 - 0.4 * T_ratio);
+
             double ff = mu_eff * fn;
-            // Shear stress limit (prevents unrealistic friction at high normal loads)
-            double contactArea = contactRadius * contactRadius * 3.14159;
-            double shearLimit = 0.577 * 595e6 * contactArea; // k = sigma_y/sqrt(3)
-            if (ff > shearLimit) ff = shearLimit;
-            double maxFriction = (particle.mass * vt) / dt;
-            if (ff > maxFriction) ff = maxFriction;
+            // Stiction: clamp friction to what's needed to stop sliding this step
+            double ffMax = (particle.mass * vt) / (dt + 1e-30);
+            if (ff > ffMax) ff = ffMax;
 
             double ffx = 0, ffy = 0, ffz = 0;
-            if (vt > 1e-12) {
+            if (vt > 1e-10) {
                 ffx = -ff * vtx / vt;
                 ffy = -ff * vty / vt;
                 ffz = -ff * vtz / vt;
@@ -113,35 +126,57 @@ __global__ void bruteForceContactKernel(
             totalFy += fy;
             totalFz += fz;
 
-            // Apply reaction to tool node
+            // Reaction on tool node
             atomicAdd(&node.fx, -fx);
             atomicAdd(&node.fy, -fy);
             atomicAdd(&node.fz, -fz);
 
-            // Frictional heat
-            double heat = 0.9 * ff * vt * dt;
-            heatGen += heat;
+            // Frictional heat generation — accumulate raw heat for this contact pair.
+            // Temperature applied AFTER the node loop (see below).
+            double heatRate     = ff * vt;          // W per contact pair
+            double heatThisStep = heatRate * dt;
+            heatGen += heatThisStep;
 
-            // Apply heat to tool node
-            atomicAdd(&node.temperature, (heat * heatPartition) / (node.mass * 200.0));
+            // Tool node temperature rise (2°C/step cap per contact pair)
+            double toolCp     = 200.0;  // J/(kg·K) carbide
+            double toolDeltaT = (heatThisStep * heatPartition) /
+                                 (fmax(node.mass, 1e-8) * toolCp);
+            toolDeltaT = fmin(toolDeltaT, 2.0);   // clamp 2°C/step per node contact
+            atomicAdd(&node.temperature, toolDeltaT);
             node.inContact = true;
+
+            // Accumulate heat fraction going to the workpiece particle
+            totalHeatToParticle += heatThisStep * (1.0 - heatPartition);
         }
     }
 
-    // ACCUMULATE forces (+=), don't overwrite. Multiple contact passes
-    // or forces from other sources must sum correctly.
+    // ─────────────────────────────────────────────────────────────────────
+    // Workpiece particle temperature update — applied ONCE after all node
+    // contacts have been processed.  This prevents dense FEM meshes from
+    // multiplying the clamp by N_contacts.
+    //
+    //   workCp = 475 J/(kg·K)  — AISI 4140 Steel (NOT Ti-6Al-4V)
+    //   max ΔT = 5°C/step total (physically: heat spreads over bulk)
+    //   temp cap = 1460°C      — Steel 4140 melting point
+    // ─────────────────────────────────────────────────────────────────────
+    if (totalHeatToParticle > 0.0) {
+        const double workCp   = 475.0;   // J/(kg·K) Steel 4140
+        double workDeltaT = totalHeatToParticle /
+                            (fmax(particle.mass, 1e-15) * workCp);
+        workDeltaT = fmin(workDeltaT, 5.0);   // clamp total ΔT to 5°C/step
+        particle.temperature = fmin(particle.temperature + workDeltaT, 1460.0);
+    }
+
+    // Accumulate external forces (not overwrite)
     particle.ext_fx += totalFx;
     particle.ext_fy += totalFy;
     particle.ext_fz += totalFz;
 
-    if (heatGen > 0) {
-        particle.temperature += (heatGen * (1.0 - heatPartition)) / (particle.mass * 500.0);
-    }
-
     if (hasContact) {
         atomicAdd(contactCount, 1);
-        atomicAdd(totalHeat,   heatGen);
-        atomicAdd(totalForce,  sqrt(totalFx * totalFx + totalFy * totalFy + totalFz * totalFz));
+        atomicAdd(totalHeat,    heatGen);
+        double fmag = sqrt(totalFx * totalFx + totalFy * totalFy + totalFz * totalFz);
+        atomicAdd(totalForce,   fmag);
     }
 }
 
@@ -201,10 +236,13 @@ void ContactSolver::resolveContacts(double dt) {
     // Diagnostic logging (every 100th call)
     static int contactCallCount = 0;
     if (++contactCallCount % 100 == 1) {
-        std::cout << "[ContactSolver] step " << contactCallCount
-                  << ": " << m_numContacts << " contacts"
-                  << ", heat=" << m_totalHeatGenerated
-                  << ", force=" << m_totalContactForce << std::endl;
+        std::cout << std::fixed
+                  << "[ContactSolver] call#" << contactCallCount
+                  << ": contacts=" << m_numContacts
+                  << std::scientific << std::setprecision(3)
+                  << ", heat=" << m_totalHeatGenerated << " J"
+                  << ", force=" << m_totalContactForce << " N"
+                  << std::defaultfloat << std::endl;
     }
     
     // === Tool Coating Wear Update ===

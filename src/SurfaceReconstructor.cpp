@@ -549,7 +549,7 @@ Mesh SurfaceReconstructor::reconstruct(const std::vector<SPHParticle>& particles
         return Mesh();
     }
 
-    // Compute bounding box with padding
+    // Compute TIGHT bounding box from actual particle positions (not domain padding)
     BoundingBox bb;
     for (const auto& p : particles) {
         if (p.status != ParticleStatus::INACTIVE) {
@@ -557,37 +557,50 @@ Mesh SurfaceReconstructor::reconstruct(const std::vector<SPHParticle>& particles
         }
     }
 
+    // Use 2× smoothing radius as margin so the isosurface stays within bounds
     double pad = params.smoothingRadius * 2.0;
     Vec3 gridMin(bb.min.x - pad, bb.min.y - pad, bb.min.z - pad);
     Vec3 gridMax(bb.max.x + pad, bb.max.y + pad, bb.max.z + pad);
 
-    int nx = static_cast<int>((gridMax.x - gridMin.x) / params.cellSize) + 2;
-    int ny = static_cast<int>((gridMax.y - gridMin.y) / params.cellSize) + 2;
-    int nz = static_cast<int>((gridMax.z - gridMin.z) / params.cellSize) + 2;
+    // Determine cell size for reconstruction. Use params.cellSize as target,
+    // but enforce it is at least smoothingRadius/2 (won't over-refine) and at
+    // most 2*smoothingRadius (won't under-resolve).
+    double cellSize = params.cellSize;
+    cellSize = std::max(cellSize, params.smoothingRadius * 0.5);
+    cellSize = std::min(cellSize, params.smoothingRadius * 2.0);
 
-    // Cap grid size to prevent excessive memory
-    const int maxDim = 256;
+    int nx = static_cast<int>((gridMax.x - gridMin.x) / cellSize) + 2;
+    int ny = static_cast<int>((gridMax.y - gridMin.y) / cellSize) + 2;
+    int nz = static_cast<int>((gridMax.z - gridMin.z) / cellSize) + 2;
+
+    // Cap grid to 128³ (< 8 MB at double precision) — if we hit this, enlarge cellSize
+    const int maxDim = 128;
     if (nx > maxDim || ny > maxDim || nz > maxDim) {
-        double scale = static_cast<double>(maxDim) / std::max({nx, ny, nz});
-        double newCellSize = params.cellSize / scale;
+        // Scale cell size up so the domain fits inside maxDim³
+        double scaleX = (nx > maxDim) ? static_cast<double>(nx) / maxDim : 1.0;
+        double scaleY = (ny > maxDim) ? static_cast<double>(ny) / maxDim : 1.0;
+        double scaleZ = (nz > maxDim) ? static_cast<double>(nz) / maxDim : 1.0;
+        double scale  = std::max({scaleX, scaleY, scaleZ});
+        cellSize *= scale;          // make cells larger so grid shrinks
         nx = std::min(nx, maxDim);
         ny = std::min(ny, maxDim);
         nz = std::min(nz, maxDim);
         std::cout << "[SurfaceReconstructor] Grid capped to " << nx << "x" << ny << "x" << nz
-                  << " (cell size adjusted to " << newCellSize*1e6 << " μm)" << std::endl;
+                  << " (cell size adjusted to " << cellSize * 1e6 << " μm)" << std::endl;
     }
 
     std::cout << "[SurfaceReconstructor] Grid: " << nx << "x" << ny << "x" << nz
               << " = " << (static_cast<long long>(nx)*ny*nz) << " voxels"
-              << " (" << activeCount << " active particles)" << std::endl;
+              << " (" << activeCount << " active particles)"
+              << " cellSize=" << cellSize*1e6 << " μm" << std::endl;
 
-    // Step 1: Build density field
+    // Step 1: Build density field (use corrected cellSize throughout)
     auto field = buildDensityField(particles, gridMin, nx, ny, nz,
-                                    params.cellSize, params.smoothingRadius);
+                                    cellSize, params.smoothingRadius);
 
-    // Step 2: Marching Cubes
+    // Step 2: Marching Cubes (use corrected cellSize)
     Mesh mesh = marchingCubes(field, gridMin, nx, ny, nz,
-                               params.cellSize, params.isoValue);
+                               cellSize, params.isoValue);
 
     std::cout << "[SurfaceReconstructor] Extracted " << mesh.nodes.size()
               << " vertices, " << mesh.triangles.size() << " triangles" << std::endl;

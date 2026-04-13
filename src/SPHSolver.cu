@@ -682,65 +682,63 @@ void SPHSolver::freeMemory() {
     if (h_pinnedParticles) { cudaFreeHost(h_pinnedParticles); h_pinnedParticles = nullptr; }
 }
 
-void SPHSolver::initializeParticleBox(const Vec3& minCorner, const Vec3& maxCorner, double spacing) {
+void SPHSolver::initializeParticleBox(const Vec3& minCorner, const Vec3& maxCorner,
+                                       double spacing) {
     h_particles.clear();
-    
-    // Calculate particle mass from spacing and rest density
+
     double volume = spacing * spacing * spacing;
     m_config.particleMass = m_config.restDensity * volume;
-    
+
     int id = 0;
     bool limitReached = false;
-    for (double z = minCorner.z; z <= maxCorner.z + 1e-9 && !limitReached; z += spacing) {
+
+    // TOP-DOWN fill: workpiece top surface (maxZ) populated first
+    for (double z = maxCorner.z; z >= minCorner.z - 1e-9 && !limitReached; z -= spacing) {
         for (double y = minCorner.y; y <= maxCorner.y + 1e-9 && !limitReached; y += spacing) {
             for (double x = minCorner.x; x <= maxCorner.x + 1e-9; x += spacing) {
-                if (h_particles.size() >= static_cast<size_t>(m_maxParticles)) {
-                    std::cerr << "[SPHSolver] WARNING: max particle count (" << m_maxParticles 
-                              << ") reached. Workpiece depth truncated at Z = " 
+                if ((int)h_particles.size() >= m_maxParticles) {
+                    std::cerr << "[SPHSolver] WARNING: max particles reached at Z="
                               << z * 1000 << " mm." << std::endl;
                     limitReached = true;
                     break;
                 }
-                
                 SPHParticle p;
-                p.x = x;
-                p.y = y;
-                p.z = z;
-                p.mass = m_config.particleMass;
-                p.density = m_config.restDensity;
+                p.x = x;  p.y = y;  p.z = z;
+                p.mass        = m_config.particleMass;
+                p.density     = m_config.restDensity;
                 p.temperature = 25.0;
-                p.id = id++;
-                p.status = ParticleStatus::ACTIVE;
-                
+                p.id          = id++;
+                p.status      = ParticleStatus::ACTIVE;
                 h_particles.push_back(p);
             }
         }
     }
-    
+
     m_numParticles = static_cast<int>(h_particles.size());
-    m_domainMin = minCorner - Vec3(m_cellSize * 10, m_cellSize * 10, m_cellSize * 10);
-    m_domainMax = maxCorner + Vec3(m_cellSize * 10, m_cellSize * 10, m_cellSize * 10);
-    
-    // Copy to GPU
+    m_domainMin    = minCorner - Vec3(m_cellSize*10, m_cellSize*10, m_cellSize*10);
+    m_domainMax    = maxCorner + Vec3(m_cellSize*10, m_cellSize*10, m_cellSize*10);
+
     copyToDevice();
-    
-    // Initialize ASB model
+
+    // ASB model
     AdiabaticShearConfig asbConfig;
     if (m_mainConfig) {
-        asbConfig.enabled = m_mainConfig->getJson().value("enable_adiabatic_shear", true);
+        asbConfig.enabled   = m_mainConfig->getJson().value("enable_adiabatic_shear", false);
         asbConfig.critStrain = m_mainConfig->getJson().value("asb_crit_shear_strain", 0.8);
     }
     m_adiabaticShearModel.initialize(asbConfig, m_meltTemp, 500.0, m_config.restDensity);
-    
-    std::cout << "[SPHSolver] Initialized " << m_numParticles << " particles in box" << std::endl;
-    
-    // === ANCHORED PHYSICS: Virtual Chuck ===
-    // Tag bottom layer as fixed boundary (rigid fixture)
-    double fixtureThickness = 0.002; // 2mm default
+
+    std::cout << "[SPHSolver] Initialized " << m_numParticles << " particles in box"
+              << std::endl;
+
+    // Virtual Chuck
+    double fixtureThickness = 0.002;
     if (m_mainConfig) {
         const auto& j = m_mainConfig->getJson();
-        if (j.contains("machine_setup") && j["machine_setup"].contains("fixture_layer_thickness_mm")) {
-            fixtureThickness = j["machine_setup"]["fixture_layer_thickness_mm"].get<double>() / 1000.0;
+        if (j.contains("machine_setup") &&
+            j["machine_setup"].contains("fixture_layer_thickness_mm")) {
+            fixtureThickness =
+                j["machine_setup"]["fixture_layer_thickness_mm"].get<double>() / 1000.0;
         }
     }
     double fixtureLine = minCorner.z + fixtureThickness;
@@ -753,82 +751,98 @@ void SPHSolver::initializeParticleBox(const Vec3& minCorner, const Vec3& maxCorn
         }
     }
     if (fixedCount > 0) {
-        copyToDevice(); // Re-upload with updated status
-        std::cout << "[SPHSolver] Virtual Chuck: " << fixedCount << " particles fixed ("
-                  << fixtureThickness*1000 << " mm layer)" << std::endl;
+        copyToDevice();
+        std::cout << "[SPHSolver] Virtual Chuck: " << fixedCount
+                  << " particles fixed (" << fixtureThickness * 1000 << " mm layer)"
+                  << std::endl;
     }
 }
 
-void SPHSolver::initializeCylindricalWorkpiece(const Vec3& center, double radius, double length, double spacing, int axis) {
+void SPHSolver::initializeCylindricalWorkpiece(const Vec3& center, double radius,
+                                                double length, double spacing, int axis) {
     h_particles.clear();
-    
+
     double volume = spacing * spacing * spacing;
     m_config.particleMass = m_config.restDensity * volume;
-    
+
     int id = 0;
-    
-    double minZ = center.z - length / 2.0;
+
+    // Tool enters from Z=maxZ (top). Fill TOP-DOWN so the cutting zone
+    // (high Z values) is always populated first when the budget is hit.
     double maxZ = center.z + length / 2.0;
-    
-    // Bounding box for generation
+    double minZ = center.z - length / 2.0;
+
     double minX = center.x - radius;
     double maxX = center.x + radius;
     double minY = center.y - radius;
     double maxY = center.y + radius;
-    
+
     bool limitReached = false;
-    for (double z = minZ; z <= maxZ + 1e-9 && !limitReached; z += spacing) {
+
+    // *** KEY FIX: iterate Z from maxZ → minZ (top → bottom) ***
+    for (double z = maxZ; z >= minZ - 1e-9 && !limitReached; z -= spacing) {
         for (double y = minY; y <= maxY + 1e-9 && !limitReached; y += spacing) {
             for (double x = minX; x <= maxX + 1e-9; x += spacing) {
-                // Check if inside cylinder
                 double dx = x - center.x;
                 double dy = y - center.y;
                 if (dx * dx + dy * dy > radius * radius) continue;
 
-                if (h_particles.size() >= static_cast<size_t>(m_maxParticles)) {
-                    std::cerr << "[SPHSolver] WARNING: max particle count (" << m_maxParticles 
-                              << ") reached. Workpiece depth truncated at Z = " 
-                              << z * 1000 << " mm." << std::endl;
+                if ((int)h_particles.size() >= m_maxParticles) {
+                    std::cerr << "[SPHSolver] WARNING: max particle count ("
+                              << m_maxParticles
+                              << ") reached at Z=" << z * 1000
+                              << " mm. Budget exhausted — reduce workpiece size "
+                              << "or increase max_particles in config." << std::endl;
                     limitReached = true;
                     break;
                 }
 
                 SPHParticle p;
-                p.x = x;
-                p.y = y;
-                p.z = z;
-                p.mass = m_config.particleMass;
-                p.density = m_config.restDensity;
+                p.x = x;  p.y = y;  p.z = z;
+                p.mass        = m_config.particleMass;
+                p.density     = m_config.restDensity;
                 p.temperature = 25.0;
-                p.id = id++;
-                p.status = ParticleStatus::ACTIVE;
-
+                p.id          = id++;
+                p.status      = ParticleStatus::ACTIVE;
                 h_particles.push_back(p);
             }
         }
     }
-    
+
     m_numParticles = static_cast<int>(h_particles.size());
-    m_domainMin = Vec3(minX, minY, minZ) - Vec3(m_cellSize * 10, m_cellSize * 10, m_cellSize * 10);
-    m_domainMax = Vec3(maxX, maxY, maxZ) + Vec3(m_cellSize * 10, m_cellSize * 10, m_cellSize * 10);
-    
+    m_domainMin    = Vec3(minX, minY, minZ) - Vec3(m_cellSize * 10, m_cellSize * 10, m_cellSize * 10);
+    m_domainMax    = Vec3(maxX, maxY, maxZ) + Vec3(m_cellSize * 10, m_cellSize * 10, m_cellSize * 10);
+
     copyToDevice();
-    
+
+    // ─── Report how much of the workpiece was actually populated ─────────
+    double topZ = maxZ, bottomZ = h_particles.empty() ? maxZ : h_particles.back().z;
+    std::cout << "[SPHSolver] Cylinder workpiece: " << m_numParticles << " particles"
+              << "  Z=[" << bottomZ * 1000 << ", " << topZ * 1000 << "] mm"
+              << " (cutting zone at top is guaranteed)" << std::endl;
+
+    if (limitReached) {
+        std::cerr << "[SPHSolver] TIP: Reduce workpiece dimensions or increase "
+                     "sph_parameters.max_particles. Recommended max ~"
+                  << (int)(m_numParticles * 1.2) << " for this geometry." << std::endl;
+    }
+
+    // ASB model
     AdiabaticShearConfig asbConfig;
     if (m_mainConfig) {
-        asbConfig.enabled = m_mainConfig->getJson().value("enable_adiabatic_shear", true);
+        asbConfig.enabled   = m_mainConfig->getJson().value("enable_adiabatic_shear", false);
         asbConfig.critStrain = m_mainConfig->getJson().value("asb_crit_shear_strain", 0.8);
     }
     m_adiabaticShearModel.initialize(asbConfig, m_meltTemp, 500.0, m_config.restDensity);
-    
-    std::cout << "[SPHSolver] Initialized " << m_numParticles << " particles in cylinder" << std::endl;
-    
-    // === ANCHORED PHYSICS: Virtual Chuck for cylinder ===
+
+    // Virtual Chuck: fix bottom fixtureThickness layer
     double fixtureThickness = 0.002;
     if (m_mainConfig) {
         const auto& j = m_mainConfig->getJson();
-        if (j.contains("machine_setup") && j["machine_setup"].contains("fixture_layer_thickness_mm")) {
-            fixtureThickness = j["machine_setup"]["fixture_layer_thickness_mm"].get<double>() / 1000.0;
+        if (j.contains("machine_setup") &&
+            j["machine_setup"].contains("fixture_layer_thickness_mm")) {
+            fixtureThickness =
+                j["machine_setup"]["fixture_layer_thickness_mm"].get<double>() / 1000.0;
         }
     }
     double fixtureLine = minZ + fixtureThickness;
@@ -842,8 +856,9 @@ void SPHSolver::initializeCylindricalWorkpiece(const Vec3& center, double radius
     }
     if (fixedCount > 0) {
         copyToDevice();
-        std::cout << "[SPHSolver] Virtual Chuck (cylinder): " << fixedCount << " particles fixed ("
-                  << fixtureThickness*1000 << " mm layer)" << std::endl;
+        std::cout << "[SPHSolver] Virtual Chuck (cylinder): " << fixedCount
+                  << " particles fixed (" << fixtureThickness * 1000 << " mm layer)"
+                  << std::endl;
     }
 }
 
@@ -1048,14 +1063,19 @@ void SPHSolver::updateResults() {
 }
 
 double SPHSolver::getStableTimeStep() const {
-    // CFL condition for SPH: dt < 0.4 * h / max(v_max, c_sound)
-    double c_sound = std::sqrt(m_config.gasStiffness);
-    double v_max = std::max(m_results.maxVelocity, c_sound);
-    
-    if (v_max > 1e-12) {
-        return 0.4 * m_config.h / v_max;
-    }
-    return 1e-6;
+    // CFL: dt < C_cfl * h / (v_max + c_sound)
+    // For metals use gamma=7.15: c_sound = sqrt(B * gamma / rho0)
+    // B = gasStiffness * restDensity / gamma  →  c_sound = sqrt(gasStiffness)
+    double c_sound = std::sqrt(m_config.gasStiffness);          // ~55 m/s for default
+    double v_max   = std::max(m_results.maxVelocity, c_sound);  // never below c_sound
+
+    double dt_cfl  = 0.25 * m_config.h / v_max;                 // CFL (tighter factor)
+    double dt_visc = 0.125 * m_config.h * m_config.h * m_config.restDensity / m_config.viscosity;
+
+    double dt = std::min(dt_cfl, dt_visc);
+
+    // Hard floor to prevent vanishing timesteps during startup
+    return std::max(dt, 5e-9);
 }
 
 void SPHSolver::reset() {

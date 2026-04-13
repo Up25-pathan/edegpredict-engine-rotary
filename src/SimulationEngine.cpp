@@ -305,13 +305,17 @@ bool SimulationEngine::step(double dt) {
         }
         
         if (fem && fem->getNodeCount() > 0) {
-            // Feed FEM node temperatures as heat sources into coolant
+            // Feed FEM node temperatures and POSITIONS as heat sources to coolant
             auto nodes = fem->getNodes();
             std::vector<double> temps(nodes.size());
+            std::vector<double> pos(nodes.size() * 3);
             for (size_t i = 0; i < nodes.size(); ++i) {
                 temps[i] = nodes[i].temperature;
+                pos[i*3+0] = nodes[i].x;
+                pos[i*3+1] = nodes[i].y;
+                pos[i*3+2] = nodes[i].z;
             }
-            m_cfdSolver->setHeatSources(temps.data(), 
+            m_cfdSolver->setHeatSources(temps.data(), pos.data(),
                                          static_cast<int>(nodes.size()));
         }
     }
@@ -519,6 +523,35 @@ void SimulationEngine::runMainLoop() {
         m_gcodeInterpreter = std::make_unique<GCodeInterpreter>();
         if (m_gcodeInterpreter->loadFile(gcodePath)) {
             std::cout << "[Engine] Using G-Code for toolpath control" << std::endl;
+
+            // ----------------------------------------------------------------
+            // TIME BUDGET CHECK: make sure the configured num_steps * max_dt
+            // is sufficient to cover a meaningful portion of the toolpath.
+            // ----------------------------------------------------------------
+            double gcDuration = m_gcodeInterpreter->getTotalDuration();
+            double maxDt      = m_config.getSimulation().maxTimeStep;
+            double physWindow = static_cast<double>(totalSteps) * maxDt;
+
+            std::cout << "  Segments: " << m_gcodeInterpreter->getSegmentCount() << std::endl;
+            std::cout << "  Duration: " << gcDuration << " seconds" << std::endl;
+            std::cout << "  Physics window: " << physWindow << " s  ("
+                      << std::fixed << std::setprecision(1)
+                      << (physWindow / gcDuration * 100.0) << "% of toolpath)" << std::endl;
+
+            if (physWindow < gcDuration * 0.05) {
+                std::cerr << "\n[Engine] CRITICAL: Physics window (" << physWindow
+                          << " s) covers only "
+                          << (physWindow / gcDuration * 100.0) << "% of the G-Code path ("
+                          << gcDuration << " s).\n"
+                          << "  The tool will NEVER reach the workpiece in this run.\n"
+                          << "  FIX: Increase num_steps or max_time_step_s in your JSON config.\n"
+                          << "  Recommended: num_steps=" << static_cast<int>(gcDuration / maxDt) + 1000
+                          << " to cover full toolpath.\n" << std::endl;
+            } else if (physWindow < gcDuration * 0.2) {
+                std::cerr << "[Engine] WARNING: Physics window covers only "
+                          << (physWindow / gcDuration * 100.0) << "% of G-Code path. "
+                          << "Consider increasing num_steps for full engagement." << std::endl;
+            }
         } else {
             std::cerr << "[Engine] Failed to load G-Code: "
                       << m_gcodeInterpreter->getLastError() << std::endl;
@@ -779,6 +812,29 @@ double SimulationEngine::computeAirGap() const {
 void SimulationEngine::handleAirCutting(double& dt) {
     if (!m_contactSolver || m_contactSolver->getContactCount() > 0) return;
 
+    // When G-Code is active, the toolpath timing is already defined by the
+    // interpreter. The rapid G00 already moves at max traverse rate (10 m/s).
+    // Applying an ADDITIONAL dt boost causes the tool to teleport by 0.9mm in
+    // a single step — the entire clearance gap — embedding it into the surface
+    // and generating 224+ contacts and 74kN thermal runaway in one step.
+    // DO NOT boost dt when G-Code controls the kinematics.
+    if (m_gcodeInterpreter && m_gcodeInterpreter->isLoaded()) {
+        // Still log the air-cutting status so the user can see approach progress
+        double gap = computeAirGap();
+        if (gap > 0.0005) {
+            static double lastSkipLog = -1.0;
+            if (m_currentTime - lastSkipLog > 0.05) {
+                std::cout << "[Engine] Air-cutting (gap: " << gap * 1000.0
+                          << " mm @ T=" << std::fixed << std::setprecision(4)
+                          << m_currentTime << " s)" << std::endl;
+                lastSkipLog = m_currentTime;
+            }
+        }
+        return;  // No dt override — G-Code controls the approach rate
+    }
+
+    // Legacy path: no G-Code loaded, manual kinematics only.
+    // Safe to boost dt since there is no interpolated trajectory to maintain.
     double gap = computeAirGap();
     if (gap > 0.0005) {
         static double lastSkipLog = -1.0;
@@ -787,7 +843,6 @@ void SimulationEngine::handleAirCutting(double& dt) {
                       << " mm). Accelerating..." << std::endl;
             lastSkipLog = m_currentTime;
         }
-        // Safely bump the timestep instead of overriding mathematical limits
         double baseDt = computeAdaptiveTimeStep();
         dt = std::min(baseDt * 5.0, gap / 10.0);
     }

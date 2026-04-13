@@ -6,6 +6,7 @@
 #include "Config.h"
 #include <fstream>
 #include <iostream>
+#include <filesystem>
 
 namespace edgepredict {
 
@@ -159,6 +160,7 @@ void Config::parseJson(const json& j) {
         m_sph.smoothingRadius = sp.value("smoothing_radius_m", 0.0001);
         m_sph.gasStiffness = sp.value("gas_stiffness", 3000.0);
         m_sph.maxParticles = sp.value("max_particles", 100000);
+        m_sph.particleSpacingFactor = sp.value("particle_spacing_factor", 0.8);
         
         // LOD parameters
         m_sph.lodEnabled = sp.value("lod_enabled", true);
@@ -167,13 +169,14 @@ void Config::parseJson(const json& j) {
         m_sph.lodNearSkipSteps = sp.value("lod_near_skip_steps", 5);
         m_sph.lodFarSkipSteps = sp.value("lod_far_skip_steps", 20);
         
-        // Damage/Chip Separation parameters
+        // Damage/Chip Separation parameters — use Steel 4140 JC failure as defaults
+        // (D1=0.06, D2=3.31, D3=-1.96, D4=0.018, D5=0.58 for AISI 4140)
         m_sph.damageEnabled = sp.value("damage_enabled", true);
-        m_sph.jc_D1 = sp.value("jc_D1", 0.05);
-        m_sph.jc_D2 = sp.value("jc_D2", 3.44);
-        m_sph.jc_D3 = sp.value("jc_D3", -2.12);
-        m_sph.jc_D4 = sp.value("jc_D4", 0.002);
-        m_sph.jc_D5 = sp.value("jc_D5", 0.61);
+        m_sph.jc_D1 = sp.value("jc_D1", 0.06);
+        m_sph.jc_D2 = sp.value("jc_D2", 3.31);
+        m_sph.jc_D3 = sp.value("jc_D3", -1.96);
+        m_sph.jc_D4 = sp.value("jc_D4", 0.018);
+        m_sph.jc_D5 = sp.value("jc_D5", 0.58);
         m_sph.damageThreshold = sp.value("damage_threshold", 1.0);
         m_sph.referenceStrainRate = sp.value("reference_strain_rate", 1.0);
     }
@@ -337,46 +340,86 @@ void Config::parseJson(const json& j) {
 void Config::validate() {
     m_errors.clear();
     m_isValid = true;
-    
-    // Validate optional fields (warnings only)
+
+    // =========================================================================
+    // REQUIRED ASSET VALIDATION
+    // =========================================================================
+    // Tool geometry: REQUIRED — engine must not run with a parametric fallback
+    // when the user has explicitly specified a CAD file in file_paths.
     if (m_filePaths.toolGeometry.empty()) {
-        std::cerr << "[Config] Note: No tool_geometry specified (will use solver defaults)" << std::endl;
+        m_errors.push_back(
+            "[FATAL] file_paths.tool_geometry is empty. "
+            "You MUST supply a tool CAD file (STL/STEP/IGES). "
+            "Parametric fallback has been disabled for physical-validation accuracy.");
+        m_isValid = false;
+    } else if (!std::filesystem::exists(m_filePaths.toolGeometry)) {
+        m_errors.push_back(
+            "[FATAL] Tool geometry file not found: '" + m_filePaths.toolGeometry + "'. "
+            "Check that the file exists relative to the working directory.");
+        m_isValid = false;
+    } else {
+        std::cout << "[Config] Tool geometry: " << m_filePaths.toolGeometry << " [OK]" << std::endl;
     }
-    
-    // Validate ranges
+
+    // G-Code file: REQUIRED — kinematic digital-twin accuracy demands real toolpath data.
+    if (m_filePaths.gcodeFile.empty()) {
+        m_errors.push_back(
+            "[FATAL] file_paths.gcode_file is empty. "
+            "A G-Code file is required for digital-twin kinematic accuracy.");
+        m_isValid = false;
+    } else if (!std::filesystem::exists(m_filePaths.gcodeFile)) {
+        m_errors.push_back(
+            "[FATAL] G-Code file not found: '" + m_filePaths.gcodeFile + "'. "
+            "Check that the file exists relative to the working directory.");
+        m_isValid = false;
+    } else {
+        std::cout << "[Config] G-Code file:    " << m_filePaths.gcodeFile << " [OK]" << std::endl;
+    }
+
+    // Validate simulation step budget — warn if too small to cover the full G-Code path.
+    // Estimate: at feed 382 mm/min moving 6mm plunge = ~1.0 s; budget = num_steps * max_time_step
+    double estimatedPhysicsTime = static_cast<double>(m_simulation.numSteps) * m_simulation.maxTimeStep;
+    if (estimatedPhysicsTime < 0.5) {
+        std::cerr << "[Config] WARNING: Estimated physics time = " << estimatedPhysicsTime
+                  << " s (num_steps=" << m_simulation.numSteps
+                  << " x max_dt=" << m_simulation.maxTimeStep << " s). "
+                  << "Tool may never reach workpiece. Consider increasing num_steps or max_time_step_s."
+                  << std::endl;
+    }
+
+    // =========================================================================
+    // NUMERIC RANGE VALIDATION
+    // =========================================================================
     if (m_simulation.numSteps <= 0) {
         m_errors.push_back("simulation_parameters.num_steps must be positive");
         m_isValid = false;
     }
-    
     if (m_simulation.timeStepDuration <= 0) {
         m_errors.push_back("simulation_parameters.time_step_duration_s must be positive");
         m_isValid = false;
     }
-    
     if (m_machining.rpm < 0) {
         m_errors.push_back("machining_parameters.rpm cannot be negative");
         m_isValid = false;
     }
-    
     if (m_material.density <= 0) {
         m_errors.push_back("material_properties.density_kg_m3 must be positive");
         m_isValid = false;
     }
-    
-    // Warnings (not errors)
     if (m_simulation.numSteps > 10000000) {
         std::cerr << "[Config] Warning: Very large num_steps (" 
                   << m_simulation.numSteps << ") - simulation may take a long time" 
                   << std::endl;
     }
-    
+
     if (m_isValid) {
         std::cout << "[Config] Validation passed" << std::endl;
         std::cout << "  Workpiece: " << m_material.name << std::endl;
-        std::cout << "  Tool: " << m_toolMaterial.name << std::endl;
-        std::cout << "  Steps: " << m_simulation.numSteps << std::endl;
-        std::cout << "  RPM: " << m_machining.rpm << std::endl;
+        std::cout << "  Tool:      " << m_toolMaterial.name << std::endl;
+        std::cout << "  Steps:     " << m_simulation.numSteps << std::endl;
+        std::cout << "  RPM:       " << m_machining.rpm << std::endl;
+        std::cout << "  Max dt:    " << m_simulation.maxTimeStep << " s" << std::endl;
+        std::cout << "  Physics window: ~" << estimatedPhysicsTime << " s" << std::endl;
         if (m_cfd.enabled) {
             std::cout << "  CFD: Enabled (" << m_cfd.coolantType << ")" << std::endl;
         }

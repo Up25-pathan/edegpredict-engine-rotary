@@ -69,6 +69,39 @@ __global__ void computeSpringForcesKernel(FEMNodeGPU* nodes, int numNodes,
     atomicAdd(&n2.fz, -fz);
 }
 
+/**
+ * @brief Accumulate contact-force stress into vonMisesStress using EMA.
+ *
+ * Called ONCE PER STEP, AFTER contact forces have been added to fx/fy/fz
+ * and BEFORE integrateNodesKernel clears them.
+ *
+ * For a rigid tool the von-Mises estimate is:
+ *   σ_vm ≈ |F_contact| / A_eff
+ * where A_eff = typicalSpringLength² (same as before).
+ *
+ * EMA smoothing avoids aliasing from single-step contact events:
+ *   σ_new = α * σ_current + (1-α) * σ_measured
+ *   with α = 0.9 → ~10-step moving average
+ */
+__global__ void accumulateContactStressKernel(FEMNodeGPU* nodes, int numNodes,
+                                               double typicalSpringLength,
+                                               double alpha) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= numNodes) return;
+
+    FEMNodeGPU& node = nodes[idx];
+
+    // Contact stress from current forces (include both spring AND external)
+    double fMag = sqrt(node.fx * node.fx + node.fy * node.fy + node.fz * node.fz);
+    double area = typicalSpringLength * typicalSpringLength;
+    if (area < 1e-14) area = 1e-14;
+
+    double sigma_instant = fMag / area;
+
+    // EMA: smooth over ~10 steps so the tip stays red persistently
+    node.vonMisesStress = alpha * node.vonMisesStress + (1.0 - alpha) * sigma_instant;
+}
+
 __global__ void computeStressKernel(FEMNodeGPU* nodes, int numNodes,
                                      FEMSpring*  springs, int numSprings,
                                      double youngsModulus, double typicalSpringLength) {
@@ -172,9 +205,17 @@ __global__ void updateWearKernel(FEMNodeGPU* nodes, int numNodes,
     if (node.wear > 0.3e-3) node.status = NodeStatus::WORN;
 }
 
-__global__ void thermalConductionKernel(FEMNodeGPU* nodes, int numNodes,
-                                         FEMSpring*  springs, int numSprings,
-                                         double dt, double conductivity, double specificHeat) {
+/**
+ * @brief Spring-network thermal conduction.
+ *
+ * Runs every THERMAL_SKIP steps (use effective dt = dt * THERMAL_SKIP).
+ * Cross-section area estimated per-spring rather than hardcoded.
+ * Temperature change per node is clamped to prevent instability.
+ */
+__global__ void thermalConductionKernelV2(FEMNodeGPU* nodes, int numNodes,
+                                           FEMSpring*  springs, int numSprings,
+                                           double effectiveDt,
+                                           double conductivity, double specificHeat) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= numSprings) return;
 
@@ -185,13 +226,25 @@ __global__ void thermalConductionKernel(FEMNodeGPU* nodes, int numNodes,
     FEMNodeGPU& n2 = nodes[spring.node2];
 
     double dT = n2.temperature - n1.temperature;
-    double A   = 1e-6;  // Cross-section area (rough)
-    double L   = spring.restLength;
+    if (fabs(dT) < 0.001) return;  // Skip near-equilibrium pairs
+
+    double L = spring.restLength;
     if (L < 1e-12) return;
 
-    double heatFlux = conductivity * A * dT / L;
-    atomicAdd(&n1.temperature,  heatFlux * dt / (n1.mass * specificHeat));
-    atomicAdd(&n2.temperature, -heatFlux * dt / (n2.mass * specificHeat));
+    // Cross-section proportional to spring rest-length squared
+    double A = L * L * 0.1;  // conservative: only ~10% of cross-section per spring
+                              // reduces over-diffusion through the mesh
+
+    double heatFlux = conductivity * A * dT / L;  // W
+
+    // ΔT per node = Q / (m * Cp), clamped at 5°C per application
+    double dT1 = (heatFlux * effectiveDt) / (fmax(n1.mass, 1e-8) * specificHeat);
+    double dT2 = (heatFlux * effectiveDt) / (fmax(n2.mass, 1e-8) * specificHeat);
+    dT1 = fmin(fmax(dT1, -5.0), 5.0);
+    dT2 = fmin(fmax(dT2, -5.0), 5.0);
+
+    atomicAdd(&n1.temperature,  dT1);
+    atomicAdd(&n2.temperature, -dT2);
 }
 
 __global__ void applyRotationKernel(FEMNodeGPU* nodes, int numNodes,
@@ -283,9 +336,10 @@ void FEMSolver::initializeFromMesh(const Mesh& mesh) {
         node.ox = mn.position.x;
         node.oy = mn.position.y;
         node.oz = mn.position.z;
-        // Mass from node-associated volume: spacing^3 * density
-        // Spacing estimated as cube-root of (bounding-box-volume / num-nodes)
-        node.mass        = m_material.density * 1e-9 * m_massScalingFactor;
+        // Rough node volume: total mesh volume / numNodes
+        // For now estimate from mesh bounding box
+        // (will be refined below after all nodes are added)
+        node.mass = m_material.density * 1e-9 * m_massScalingFactor;  // placeholder
         node.temperature = 25.0;
         node.id          = static_cast<int32_t>(i);
         node.status      = NodeStatus::OK;
@@ -295,6 +349,24 @@ void FEMSolver::initializeFromMesh(const Mesh& mesh) {
 
     m_numNodes = static_cast<int>(h_nodes.size());
     createSpringsFromMesh(mesh);
+
+    // --- Refine node masses using average spring length ---
+    // After createSpringsFromMesh is called we have spring lengths.
+    // Average spacing ≈ average spring rest length.
+    // Node volume ≈ spacing³, node mass = density * spacing³.
+    if (!h_springs.empty()) {
+        double sumLen = 0;
+        for (const auto& sp : h_springs) sumLen += sp.restLength;
+        double avgLen = sumLen / h_springs.size();
+        double nodeVolume = avgLen * avgLen * avgLen;
+        double nodeMass   = m_material.density * nodeVolume * m_massScalingFactor;
+        nodeMass = std::max(nodeMass, 1e-9);  // floor at 1 nanogram
+        for (auto& n : h_nodes) n.mass = nodeMass;
+        std::cout << "[FEMSolver] Node mass refined: "
+                  << nodeMass * 1e9 << " ng  (spacing "
+                  << avgLen * 1000 << " mm)" << std::endl;
+    }
+
     copyToDevice();
 
     // Compute stable time-step from max stiffness / mass ratio
@@ -415,10 +487,13 @@ void FEMSolver::step(double dt) {
         typicalL = sumL / h_springs.size();
     }
 
-    computeStressKernel<<<nodeGrid, blockSize>>>(
-        d_nodes, m_numNodes, d_springs, m_numSprings,
-        m_material.youngsModulus, typicalL);
+    // Stress accumulation from contact forces (EMA-smoothed, ∼10-step window)
+    // NOTE: computeStressKernel removed — it overwrote the EMA each step.
+    // accumulateContactStressKernel is the single authoritative stress source.
+    accumulateContactStressKernel<<<nodeGrid, blockSize>>>(
+        d_nodes, m_numNodes, typicalL, 0.9 /*EMA alpha*/);
     CUDA_CHECK_KERNEL();
+
 
     integrateNodesKernel<<<nodeGrid, blockSize>>>(
         d_nodes, m_numNodes, dt, m_globalDamping * 0.01);
@@ -426,10 +501,14 @@ void FEMSolver::step(double dt) {
     NVTX_POP();
 
     NVTX_PUSH("FEM::ThermalWear");
-    thermalConductionKernel<<<springGrid, blockSize>>>(
-        d_nodes, m_numNodes, d_springs, m_numSprings,
-        dt, m_material.thermalConductivity, m_material.specificHeat);
-    CUDA_CHECK_KERNEL();
+    // *** CHANGED: throttled thermal conduction ***
+    if (m_currentStep % m_thermalSkip == 0) {
+        double effDt = dt * m_thermalSkip;
+        thermalConductionKernelV2<<<springGrid, blockSize>>>(
+            d_nodes, m_numNodes, d_springs, m_numSprings,
+            effDt, m_material.thermalConductivity, m_material.specificHeat);
+        CUDA_CHECK_KERNEL();
+    }
 
     updateWearKernel<<<nodeGrid, blockSize>>>(
         d_nodes, m_numNodes, dt, 1e-9, 1000.0);
