@@ -42,36 +42,43 @@ __global__ void thermalConductionTetKernel(
 
     const FEMElement& el = elements[idx];
 
-    // 6 edges of a tetrahedron: (0,1), (0,2), (0,3), (1,2), (1,3), (2,3)
-    const int edgePairs[6][2] = {{0,1},{0,2},{0,3},{1,2},{1,3},{2,3}};
+    // Exact lumped-mass FEM thermal integration using shape function gradients
+    int n0 = el.nodeIndices[0];
+    int n1 = el.nodeIndices[1];
+    int n2 = el.nodeIndices[2];
+    int n3 = el.nodeIndices[3];
 
-    for (int e = 0; e < 6; ++e) {
-        int nA = el.nodeIndices[edgePairs[e][0]];
-        int nB = el.nodeIndices[edgePairs[e][1]];
-        if (nA < 0 || nA >= numNodes || nB < 0 || nB >= numNodes) continue;
+    if (n0 < 0 || n0 >= numNodes || n3 >= numNodes) return;
 
-        FEMNodeGPU& a = nodes[nA];
-        FEMNodeGPU& b = nodes[nB];
+    // Shape function gradients ∇N (3x4 matrix)
+    // For a tetrahedron, ∇N_1, ∇N_2, ∇N_3 are the columns of invDm^T (or rows of invDm)
+    // ∇N_0 = -(∇N_1 + ∇N_2 + ∇N_3)
+    double gradN[3][4];
+    for (int i = 0; i < 3; ++i) {
+        gradN[i][1] = el.invDm[0][i];
+        gradN[i][2] = el.invDm[1][i];
+        gradN[i][3] = el.invDm[2][i];
+        gradN[i][0] = -(gradN[i][1] + gradN[i][2] + gradN[i][3]);
+    }
 
-        double dx = a.x - b.x;
-        double dy = a.y - b.y;
-        double dz = a.z - b.z;
-        double L = sqrt(dx*dx + dy*dy + dz*dz);
-        if (L < 1e-15) continue;
+    double T[4] = { nodes[n0].temperature, nodes[n1].temperature, nodes[n2].temperature, nodes[n3].temperature };
 
-        // Heat transfer: Q = k · L · ΔT · dt  (A/L ≈ L for tet edges)
-        double dT = a.temperature - b.temperature;
-        double Q = thermalConductivity * L * dT * dt;
+    // K matrix: K_ij = ∫ k ∇N_i · ∇N_j dV = k * V * (∇N_i · ∇N_j)
+    // Heat flux Q_i = -dt * Σ K_ij T_j
+    double Q[4] = {0, 0, 0, 0};
+    double kVdt = thermalConductivity * el.volume * dt;
 
-        // Apply: ΔT_a = -Q/(m_a·Cp),  ΔT_b = +Q/(m_b·Cp)
-        // Accumulate heat into heatAccumulator to avoid atomic race conditions causing overshoots
-        if (a.mass > 1e-15 && specificHeat > 0) {
-            atomicAdd(&a.heatAccumulator, -Q);
-        }
-        if (b.mass > 1e-15 && specificHeat > 0) {
-            atomicAdd(&b.heatAccumulator,  Q);
+    for (int i = 0; i < 4; ++i) {
+        for (int j = 0; j < 4; ++j) {
+            double dot = gradN[0][i]*gradN[0][j] + gradN[1][i]*gradN[1][j] + gradN[2][i]*gradN[2][j];
+            Q[i] -= kVdt * dot * T[j];
         }
     }
+
+    if (nodes[n0].mass > 1e-15 && specificHeat > 0) atomicAdd(&nodes[n0].heatAccumulator, Q[0]);
+    if (nodes[n1].mass > 1e-15 && specificHeat > 0) atomicAdd(&nodes[n1].heatAccumulator, Q[1]);
+    if (nodes[n2].mass > 1e-15 && specificHeat > 0) atomicAdd(&nodes[n2].heatAccumulator, Q[2]);
+    if (nodes[n3].mass > 1e-15 && specificHeat > 0) atomicAdd(&nodes[n3].heatAccumulator, Q[3]);
 }
 
 __global__ void applyTetHeatKernel(
@@ -132,11 +139,12 @@ __global__ void computeElementForcesKernel(FEMNodeGPU* nodes, int numNodes,
                 + F[0][2]*(F[1][0]*F[2][1] - F[1][1]*F[2][0]);
 
     if (detF < 0.05) {
-        // Element is inverted or near-inverted. Reset to identity to prevent
-        // explosion. This replaces the old 1MN force cap with a physical guard.
-        F[0][0] = 1; F[0][1] = 0; F[0][2] = 0;
-        F[1][0] = 0; F[1][1] = 1; F[1][2] = 0;
-        F[2][0] = 0; F[2][1] = 0; F[2][2] = 1;
+        // Continuous inversion guard: scale F to maintain minimum volume,
+        // avoiding discontinuous shocks caused by hard reset to identity.
+        double scale = cbrt(0.05 / fmax(detF, 1e-9));
+        for(int i=0; i<3; ++i)
+            for(int j=0; j<3; ++j)
+                F[i][j] *= scale;
     }
 
     // ── Polar decomposition: extract rotation R from F ──
@@ -423,20 +431,19 @@ __global__ void integrateNodesKernel(FEMNodeGPU* nodes, int numNodes,
     double ay = node.fy / node.mass;
     double az = node.fz / node.mass;
 
-    double halfDt = 0.5 * dt;
-    node.vx += ax * halfDt;
-    node.vy += ay * halfDt;
-    node.vz += az * halfDt;
+    // Symplectic Euler Integration
+    node.vx += ax * dt;
+    node.vy += ay * dt;
+    node.vz += az * dt;
+    
+    // Apply damping
+    node.vx *= (1.0 - damping);
+    node.vy *= (1.0 - damping);
+    node.vz *= (1.0 - damping);
 
     node.x += node.vx * dt;
     node.y += node.vy * dt;
     node.z += node.vz * dt;
-
-    // Second half-step is applied AFTER force computation next step
-    // However, since forces are cleared, we do a full explicit step:
-    node.vx += ax * halfDt;
-    node.vy += ay * halfDt;
-    node.vz += az * halfDt;
     
     node.vx *= (1.0 - damping);
     node.vy *= (1.0 - damping);

@@ -286,7 +286,7 @@ __global__ void xpbdContactSpatialHashKernel(
             double ft_coulomb = mu_eff * fn;
             double ft_stiction = (vt > 1e-10) ? (p.mass * vt / dt) : 0.0;
 
-            double contactArea = 3.14159265 * contactRadius * penetration;
+            double contactArea = pow(p.mass / fmax(p.density, 1.0), 2.0/3.0);
             double ft_shear_limit = shearYieldStress * contactArea;
             double ft = fmin(fmin(ft_coulomb, ft_stiction), ft_shear_limit);
 
@@ -432,12 +432,7 @@ __global__ void xpbdContactKernel(
         // ── Normal impulse force (for reporting and reaction on node) ────────
         // F_constraint = m_particle * penetration / dt²
         // Scaled by engagement ramp to prevent initial shock.
-        double preRelVx = p.vx - node.vx;
-        double preRelVy = p.vy - node.vy;
-        double preRelVz = p.vz - node.vz;
-        double preVn = preRelVx*nx + preRelVy*ny + preRelVz*nz;
-        double approachSpeed = fmax(0.0, -preVn);
-        double fn = (kNormal * penetration + cNormal * approachSpeed) * engagementScale;
+        double fn = (p.mass * penetration / (dt * dt)) * engagementScale;
 
         // Reaction force on the (kinematic) tool node
         atomicAdd(&node.fx, -fn * nx);
@@ -485,7 +480,7 @@ __global__ void xpbdContactKernel(
         // exceed the shear yield strength of the workpiece material:
         //   τ_max = σ_yield / √3 (von Mises criterion)
         // Contact area estimated from contact radius: A ≈ π·r²
-        double contactArea = 3.14159265 * contactRadius * penetration;
+        double contactArea = pow(p.mass / fmax(p.density, 1.0), 2.0/3.0);
         double ft_shear_limit = shearYieldStress * contactArea;
         
         double ft = fmin(fmin(ft_coulomb, ft_stiction), ft_shear_limit);

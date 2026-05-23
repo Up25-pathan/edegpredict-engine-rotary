@@ -301,6 +301,13 @@ __global__ void computeStrainRateKernel(SPHParticle* particles, int numParticles
     }
 
     // ── KGC Matrix Inversion (3×3 analytic) ─────────────────────────────────
+    // Tikhonov regularization: Add small factor to diagonal to ensure invertibility
+    // and smooth strain rate discontinuities near free surfaces.
+    const double lambda = 1e-6;
+    b00 += lambda;
+    b11 += lambda;
+    b22 += lambda;
+
     // Compute det(B) and apply inverse if well-conditioned.
     // For interior particles det(B) ≈ 1 → corrected ≈ raw.
     // For boundary particles det(B) < 1 → correction amplifies truncated gradient.
@@ -488,15 +495,63 @@ __global__ void computeJCStressKernel(
 
     double sigma_JC = strainTerm * rateTerm * thermalTerm;
 
-    // ── Levy-Mises: distribute flow stress along strain rate direction ──
-    double scale = (2.0 / 3.0) * sigma_JC / eps_dot_safe;
+    // ── Radial Return Mapping (Elastoplasticity) ──
+    const double shearModulus = 77e9; // 77 GPa (typical steel/Ti)
+    
+    // 1. Strain increment
+    double d_exx = exx * effectiveDt;
+    double d_eyy = eyy * effectiveDt;
+    double d_ezz = ezz * effectiveDt;
+    double d_exy = exy * effectiveDt;
+    double d_exz = exz * effectiveDt;
+    double d_eyz = eyz * effectiveDt;
 
-    double s_xx = scale * dev_exx;
-    double s_yy = scale * dev_eyy;
-    double s_zz = scale * dev_ezz;
-    double s_xy = scale * exy;
-    double s_xz = scale * exz;
-    double s_yz = scale * eyz;
+    // 2. Deviatoric strain increment
+    double tr_dE = d_exx + d_eyy + d_ezz;
+    double d_dev_exx = d_exx - tr_dE / 3.0;
+    double d_dev_eyy = d_eyy - tr_dE / 3.0;
+    double d_dev_ezz = d_ezz - tr_dE / 3.0;
+    
+    // 3. Current deviatoric stress (recover from stored total stress)
+    double tr_sigma_n = pi.stress_xx + pi.stress_yy + pi.stress_zz; 
+    double s_n_xx = pi.stress_xx - tr_sigma_n / 3.0;
+    double s_n_yy = pi.stress_yy - tr_sigma_n / 3.0;
+    double s_n_zz = pi.stress_zz - tr_sigma_n / 3.0;
+    double s_n_xy = pi.stress_xy;
+    double s_n_xz = pi.stress_xz;
+    double s_n_yz = pi.stress_yz;
+
+    // 4. Elastic Trial Stress (Deviatoric)
+    double s_tr_xx = s_n_xx + 2.0 * shearModulus * d_dev_exx;
+    double s_tr_yy = s_n_yy + 2.0 * shearModulus * d_dev_eyy;
+    double s_tr_zz = s_n_zz + 2.0 * shearModulus * d_dev_ezz;
+    double s_tr_xy = s_n_xy + 2.0 * shearModulus * d_exy;
+    double s_tr_xz = s_n_xz + 2.0 * shearModulus * d_exz;
+    double s_tr_yz = s_n_yz + 2.0 * shearModulus * d_eyz;
+
+    // 5. Equivalent Trial Stress (Von Mises)
+    double J2_tr = 0.5 * (s_tr_xx*s_tr_xx + s_tr_yy*s_tr_yy + s_tr_zz*s_tr_zz) 
+                 + s_tr_xy*s_tr_xy + s_tr_xz*s_tr_xz + s_tr_yz*s_tr_yz;
+    double sigma_eq_tr = sqrt(3.0 * J2_tr);
+
+    double s_xx = s_tr_xx;
+    double s_yy = s_tr_yy;
+    double s_zz = s_tr_zz;
+    double s_xy = s_tr_xy;
+    double s_xz = s_tr_xz;
+    double s_yz = s_tr_yz;
+
+    // 6. Yield check and return mapping
+    if (sigma_eq_tr > sigma_JC && sigma_eq_tr > 1e-6) {
+        // Plastic deformation
+        double scale = sigma_JC / sigma_eq_tr;
+        s_xx *= scale;
+        s_yy *= scale;
+        s_zz *= scale;
+        s_xy *= scale;
+        s_xz *= scale;
+        s_yz *= scale;
+    }
 
     // ── Total Cauchy stress = deviatoric − pressure·I ──
     pi.stress_xx = s_xx - pi.pressure;

@@ -184,6 +184,7 @@ struct SPHParticle {
     int32_t cellHash;       // Spatial hash for neighbor search
     LODZone lodZone;        // Level of Detail zone
     int32_t lastUpdateStep; // Last step when full physics was computed
+    uint8_t asbCounter;     // Adiabatic Shear Band history counter
     
     EP_HOST_DEVICE SPHParticle() 
         : x(0), y(0), z(0),
@@ -195,7 +196,7 @@ struct SPHParticle {
           stress_xy(0), stress_xz(0), stress_yz(0),
           plasticStrain(0), strainRate(0), damage(0), residualStress(0),
           id(-1), status(ParticleStatus::ACTIVE), cellHash(0),
-          lodZone(LODZone::ACTIVE), lastUpdateStep(0) {}
+          lodZone(LODZone::ACTIVE), lastUpdateStep(0), asbCounter(0) {}
 };
 
 // ============================================================================
