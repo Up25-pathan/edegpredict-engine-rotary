@@ -295,37 +295,6 @@ bool SimulationEngine::step(double dt) {
         m_strategy->updateConditions(state, dt);
         m_strategy->applyKinematics(dt);
         
-        // =====================================================================
-        // Fix K: Apply strategy cutting forces to SPH workpiece particles.
-        //
-        // computeOutput() computes bulk cutting forces (Kienzle, chisel edge,
-        // lip force) from the machining model, but these were NEVER applied
-        // to the physics solvers. The contact solver only handles geometric
-        // constraint forces — the strategy provides the additional cutting
-        // force model that drives chip formation and realistic thrust.
-        //
-        // Force is applied as a distributed body force to SPH particles
-        // within 3× smoothing radius of the tool tip position.
-        // Direction: opposite to tool motion (reaction on workpiece).
-        // =====================================================================
-        if (!state.isRapid && !m_skipPhysicsThisStep) {
-            auto output = m_strategy->computeOutput();
-            Vec3 totalForce = output.cuttingForce + output.thrustForce + output.feedForce;
-            double forceMag = totalForce.length();
-            
-            if (forceMag > 0.01) {  // Only apply if force is non-trivial (>10mN)
-                // Reaction force on workpiece = opposite of force on tool
-                Vec3 forceOnWorkpiece = totalForce * (-1.0);
-                
-                for (auto& solver : m_solvers) {
-                    if (auto* sph = dynamic_cast<MPMSolver*>(solver.get())) {
-                        double applyRadius = sph->getSmoothingRadius() * 3.0;
-                        sph->applyExternalForce(state.position, applyRadius, forceOnWorkpiece);
-                        break;
-                    }
-                }
-            }
-        }
     }
 
     // --- Physics solvers ---

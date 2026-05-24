@@ -119,7 +119,7 @@ __global__ void applyAdiabaticHeatingKernel(MPMParticle* particles, int numParti
     const double minThreshold = fmax(params.criticalStrainRate * 0.1, 100.0);
     if (p.strainRate < minThreshold) {
         // Decay the sustained-history counter
-        p.lastUpdateStep = max(0, p.lastUpdateStep - 1);
+        p.asbCounter = max(0, p.asbCounter - 1);
         return;
     }
 
@@ -137,12 +137,12 @@ __global__ void applyAdiabaticHeatingKernel(MPMParticle* particles, int numParti
                 (params.density * params.specificHeat);
 
     // ── Guard 3: Sustained history counter ────────────────────────────
-    // We use p.lastUpdateStep as an integer counter (0 to N steps).
+    // We use p.asbCounter as an integer counter (0 to N steps).
     // Adiabatic shear band localization only applied after >= 3 consecutive steps
     // above the critical rate (ensures it's a sustained physical event, not noise).
-    p.lastUpdateStep = min(p.lastUpdateStep + 1, 10);
+    p.asbCounter = min(p.asbCounter + 1, 10);
 
-    if (p.strainRate > params.criticalStrainRate && p.lastUpdateStep >= 3) {
+    if (p.strainRate > params.criticalStrainRate && p.asbCounter >= 3) {
         // Localization factor: ramps from 1 to 2.5 as strain rate increases.
         // Reduced from old 5× to 2.5× (supported by Dodd & Bai 1987 measurement).
         double ratio        = p.strainRate / params.criticalStrainRate;

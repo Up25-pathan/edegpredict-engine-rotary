@@ -188,6 +188,7 @@ struct MPMParticle {
     int32_t cellHash;       // Spatial hash for neighbor/grid search
     LODZone lodZone;        // Level of Detail zone
     int32_t lastUpdateStep; // Last step when full physics was computed
+    uint8_t asbCounter;     // Counter for adiabatic shear band localization
     
     EP_HOST_DEVICE MPMParticle() 
         : x(0), y(0), z(0),
@@ -198,7 +199,7 @@ struct MPMParticle {
           stress_xy(0), stress_xz(0), stress_yz(0),
           plasticStrain(0), strainRate(0), damage(0), residualStress(0),
           id(-1), status(ParticleStatus::ACTIVE), cellHash(0),
-          lodZone(LODZone::ACTIVE), lastUpdateStep(0) 
+          lodZone(LODZone::ACTIVE), lastUpdateStep(0), asbCounter(0) 
     {
         // Initialize F and F_p to Identity, C to zero
         for (int i=0; i<9; i++) {
