@@ -3,7 +3,7 @@
     "machining_type": "drilling",
     "simulation_parameters": {
         "num_steps": 20000,
-        "time_step_duration_s": 1e-6,
+        "time_step_duration_s": 1e-06,
         "output_interval_steps": 100,
         "preview_setup": true
     },
@@ -20,15 +20,14 @@
         "output_results": "results_DE10.json"
     },
     "workpiece_geometry": {
-        "shape": "box",
-        "width_mm": 50.0,
-        "height_mm": 50.0,
-        "depth_mm": 50.0
+        "shape": "cylinder",
+        "radius_mm": 10.0,
+        "length_mm": 30.0
     },
     "material_properties": {
         "name": "Steel 4140",
         "density_kg_m3": 7850.0,
-        "youngs_modulus_Pa": 210e9,
+        "youngs_modulus_Pa": 210000000000.0,
         "johnson_cook_plasticity": {
             "A_yield_strength_MPa": 595.0,
             "B_strain_hardening_MPa": 580.0,
@@ -56,7 +55,11 @@
         }
     },
     "machine_setup": {
-        "G54": [0.0, 0.0, 0.0],
+        "G54": [
+            0.0,
+            0.0,
+            0.0
+        ],
         "tool_length_offset_mm": 0.0,
         "auto_align_tool_tip": true,
         "fixture_layer_thickness_mm": 5.0
