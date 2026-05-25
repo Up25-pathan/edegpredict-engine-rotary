@@ -79,7 +79,18 @@ __global__ void p2gKernel(MPMParticle* particles, int numParticles, MPMGridNode*
     if (pIdx >= numParticles) return;
     
     MPMParticle& p = particles[pIdx];
-    if (p.status == ParticleStatus::INACTIVE) return;
+    if (p.status == ParticleStatus::INACTIVE || p.status == ParticleStatus::DELETED) return;
+
+    // Boundary Kill Zone check to prevent CUDA out-of-bounds crash
+    int cx = (int)floor((p.x - domainMin.x) * config.invDx);
+    int cy = (int)floor((p.y - domainMin.y) * config.invDx);
+    int cz = (int)floor((p.z - domainMin.z) * config.invDx);
+    if (cx < 1 || cx >= dimensions.x - 2 || 
+        cy < 1 || cy >= dimensions.y - 2 || 
+        cz < 1 || cz >= dimensions.z - 2) {
+        p.status = ParticleStatus::DELETED;
+        return;
+    }
 
     // LOD: FAR zone particles only contribute mass and momentum (kinematic), no stress
     bool skipStress = (p.lodZone == LODZone::ZONE_FAR);
@@ -366,7 +377,7 @@ __global__ void g2pKernel(MPMParticle* particles, int numParticles, MPMGridNode*
     if (pIdx >= numParticles) return;
     
     MPMParticle& p = particles[pIdx];
-    if (p.status == ParticleStatus::INACTIVE) return;
+    if (p.status == ParticleStatus::INACTIVE || p.status == ParticleStatus::DELETED) return;
 
     // FIXED_BOUNDARY: keep zero velocity and fixed position
     if (p.status == ParticleStatus::FIXED_BOUNDARY) {

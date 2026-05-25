@@ -296,13 +296,16 @@ __global__ void xpbdContactSpatialHashKernel(
             double contactArea = pow(p.mass / fmax(p.density, 1.0), 2.0/3.0);
             double ft_shear_limit = shearYieldStress * contactArea;
             double ft = fmin(fmin(ft_coulomb, ft_stiction), ft_shear_limit);
-
-            // Fix G: engagementScale applied ONCE to each heat path.
-            // Old code applied it twice to node heat (once here, once in atomicAdd).
-            double heatThisStep = ft * vt * dt;  // Raw frictional heat [J]
-
-            totalHeatToParticle += heatThisStep * (1.0 - heatPartition) * engagementScale;
-            atomicAdd(&node.heatAccumulator, heatThisStep * heatPartition * engagementScale);
+    double heatThisStep = ft * vt * dt;
+    double htc = 1.0e5;
+    double Q_cond = htc * contactArea * (p.temperature - node.temperature) * dt;
+    totalHeatToParticle += (heatThisStep * (1.0 - heatPartition) - Q_cond) * engagementScale;
+    atomicAdd(&node.heatAccumulator, (heatThisStep * heatPartition + Q_cond) * engagementScale);
+    if (vt > 1e-15) {
+        atomicAdd(&node.fx, ft * (vtx / vt));
+        atomicAdd(&node.fy, ft * (vty / vt));
+        atomicAdd(&node.fz, ft * (vtz / vt));
+    }
             node.inContact = true;
 
             totalHeatGen += heatThisStep * engagementScale;
@@ -491,18 +494,16 @@ __global__ void xpbdContactKernel(
         double ft_shear_limit = shearYieldStress * contactArea;
         
         double ft = fmin(fmin(ft_coulomb, ft_stiction), ft_shear_limit);
-
-        // Frictional heat generated this contact pair: Q = ft * vt * dt
-        // Fix G: engagementScale applied ONCE to each heat path (was doubled before).
-        double heatThisStep = ft * vt * dt;   // Raw frictional heat [J]
-
-        // ── Accumulate heat for workpiece particle ───────────────────────────
-        totalHeatToParticle += heatThisStep * (1.0 - heatPartition) * engagementScale;
-
-        // ── Accumulate heat into node's buffer (NOT ΔT!) ────────────────────
-        // The conversion J → ΔT happens ONCE in applyNodeHeatKernel.
-        atomicAdd(&node.heatAccumulator, heatThisStep * heatPartition * engagementScale);
-
+    double heatThisStep = ft * vt * dt;
+    double htc = 1.0e5;
+    double Q_cond = htc * contactArea * (p.temperature - node.temperature) * dt;
+    totalHeatToParticle += (heatThisStep * (1.0 - heatPartition) - Q_cond) * engagementScale;
+    atomicAdd(&node.heatAccumulator, (heatThisStep * heatPartition + Q_cond) * engagementScale);
+    if (vt > 1e-15) {
+        atomicAdd(&node.fx, ft * (vtx / vt));
+        atomicAdd(&node.fy, ft * (vty / vt));
+        atomicAdd(&node.fz, ft * (vtz / vt));
+    }
         node.inContact = true;
 
         totalHeatGen += heatThisStep * engagementScale;
