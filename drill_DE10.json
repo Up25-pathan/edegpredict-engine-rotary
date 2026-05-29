@@ -1,73 +1,120 @@
 {
-    "simulation_name": "Sandvik CoroDrill 860-GM DE10 Test",
+    "simulation_name": "Sandvik CoroDrill DE10 — 10mm on AISI 4140 Steel",
     "machining_type": "drilling",
     "simulation_parameters": {
-        "num_steps": 20000,
-        "time_step_duration_s": 1e-06,
-        "output_interval_steps": 100,
-        "preview_setup": true
+        "num_steps": 500000,
+        "time_step_duration_s": 5e-06,
+        "max_time_step_s": 5e-06,
+        "min_time_step_s": 1e-09,
+        "output_interval_steps": 200,
+        "preview_setup": false
     },
     "machining_parameters": {
-        "rpm": 2550.0,
-        "feed_rate_mm_min": 382.0,
-        "depth_of_cut_mm": 25.0
-    },
-    "file_paths": {
-        "tool_geometry": "sandvik_de10.stp",
-        "workpiece_geometry": "",
-        "gcode_file": "drill_DE10.gcode",
-        "output_directory": "output_DE10",
-        "output_results": "results_DE10.json"
-    },
-    "workpiece_geometry": {
-        "shape": "cylinder",
-        "radius_mm": 10.0,
-        "length_mm": 30.0
+        "rpm": 3501,
+        "feed_rate_mm_min": 525.0,
+        "depth_of_cut_mm": 15.0
     },
     "material_properties": {
-        "name": "Steel 4140",
-        "density_kg_m3": 7850.0,
-        "youngs_modulus_Pa": 210000000000.0,
+        "name": "AISI 4140 Alloy Steel (Quenched & Tempered, 28 HRC)",
+        "density_kg_m3": 7850,
+        "youngs_modulus_Pa": 2.05e+11,
+        "poissons_ratio": 0.29,
+        "specific_heat_J_kgK": 475,
+        "thermal_conductivity_W_mK": 42.6,
+        "melting_point_C": 1460,
+        "yield_strength_MPa": 595,
+        "failure_strain": 0.3,
+        "fracture_toughness_MPa_sqrt_m": 55.0,
         "johnson_cook_plasticity": {
-            "A_yield_strength_MPa": 595.0,
-            "B_strain_hardening_MPa": 580.0,
+            "A_yield_strength_MPa": 595,
+            "B_strain_hardening_MPa": 580,
             "n_strain_hardening_exp": 0.133,
             "C_strain_rate_sensitivity": 0.023,
             "m_thermal_softening_exp": 1.03
-        },
-        "yield_strength_MPa": 595.0,
-        "failure_strain": 0.3
+        }
     },
     "tool_material": {
-        "name": "Tungsten Carbide (Sandvik Grade)",
-        "density_kg_m3": 15000.0,
-        "youngs_modulus_GPa": 600.0,
+        "name": "Sandvik GC4334 Cemented Carbide (TiAlN/TiN PVD Coated)",
+        "density_kg_m3": 14500,
+        "youngs_modulus_GPa": 620,
         "poissons_ratio": 0.22,
-        "specific_heat_J_kgK": 200.0,
-        "thermal_conductivity_W_mK": 80.0,
-        "melting_point_C": 2870.0,
-        "yield_strength_GPa": 4.5,
+        "specific_heat_J_kgK": 200,
+        "thermal_conductivity_W_mK": 80,
+        "melting_point_C": 2870,
+        "yield_strength_GPa": 4.0,
         "coating": "TiAlN",
-        "coating_thickness_um": 4.0,
+        "coating_thickness_um": 3.0,
         "usui_wear": {
-            "A": 1.2e-11,
-            "B": 1050.0
+            "A": 1e-9,
+            "B": 1000.0
         }
+    },
+    "sph_parameters": {
+        "smoothing_radius_m": 0.0003,
+        "max_particles": 100000,
+        "particle_spacing_factor": 0.8,
+        "gas_stiffness": 35000000,
+        "lod_enabled": true,
+        "lod_active_radius_m": 0.008,
+        "lod_near_radius_m": 0.020,
+        "damage_enabled": true,
+        "jc_D1": 0.06,
+        "jc_D2": 3.31,
+        "jc_D3": -1.96,
+        "jc_D4": 0.018,
+        "jc_D5": 0.58,
+        "damage_threshold": 1.0,
+        "reference_strain_rate": 1.0
+    },
+    "fem_parameters": {
+        "max_nodes": 50000,
+        "max_elements": 200000,
+        "youngs_modulus_Pa": 6.2e+11,
+        "poissons_ratio": 0.22,
+        "density_kg_m3": 14500,
+        "damping_ratio": 0.05,
+        "mass_scaling_factor": 1.0,
+        "stiffness_scaling_factor": 1.0
+    },
+    "cfd_parameters": {
+        "enabled": true,
+        "coolant_type": "Water-Glycol",
+        "grid_x": 30,
+        "grid_y": 30,
+        "grid_z": 30,
+        "inlet_velocity_m_s": 1.5,
+        "inlet_temperature_C": 20.0
+    },
+    "workpiece_geometry": {
+        "shape": "box",
+        "width_mm": 50,
+        "height_mm": 50,
+        "depth_mm": 50
+    },
+    "file_paths": {
+        "tool_geometry": "sandvik_de10.stp",
+        "gcode_file": "drill_DE10.gcode",
+        "output_directory": "output_DE10"
     },
     "machine_setup": {
         "G54": [
-            0.0,
-            0.0,
-            0.0
+            0,
+            0,
+            0
         ],
-        "tool_length_offset_mm": 0.0,
+        "tool_length_offset_mm": 0,
         "auto_align_tool_tip": true,
-        "fixture_layer_thickness_mm": 5.0
+        "align_axis": "Z",
+        "enable_spindle_dynamics": false,
+        "spindle_stiffness_N_m": 1e8,
+        "spindle_damping_N_s_m": 1e4,
+        "driven_node_fraction": 0.3
     },
-    "sph_parameters": {
-        "smoothing_radius_m": 0.0004,
-        "max_particles": 2000000,
-        "lod_enabled": true,
-        "damage_enabled": true
+    "health_monitor": {
+        "enabled": true,
+        "max_force_N": 100e6,
+        "stress_multiplier": 50.0,
+        "thermal_fraction": 0.05,
+        "contact_multiplier": 50
     }
 }
