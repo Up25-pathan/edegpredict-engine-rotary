@@ -138,11 +138,11 @@ __global__ void p2gKernel(MPMParticle* particles, int numParticles, MPMGridNode*
             }
         }
 
-        double lnJ = log(J);
+        double Jpow = (J - 1.0);
         for (int i = 0; i < 9; ++i) {
             sigma[i] = (mu / J) * B[i];
             if (i % 4 == 0) {
-                sigma[i] += (lambda / J) * lnJ - (mu / J);
+                sigma[i] += lambda * Jpow - (mu / J);
             }
         }
 
@@ -191,17 +191,30 @@ __global__ void p2gKernel(MPMParticle* particles, int numParticles, MPMGridNode*
                 //   This ensures F_e = F * inv(F_p) only contains elastic strain
                 // ============================================================
                 {
-                    double alpha = 1.5 * deltaEps / fmax(q, 1e-12);
+                    // Multiplicative Radial-Return Plasticity (Volume-preserving)
+                    double s_norm = sqrt(s[0]*s[0] + s[4]*s[4] + s[8]*s[8] + 2.0*(s[1]*s[1] + s[2]*s[2] + s[5]*s[5]));
+                    double alpha = (s_norm > 1e-12) ? (1.5 * deltaEps / s_norm) : 0.0;
+                    
+                    double I_alpha_s[9] = {0};
+                    for(int i=0; i<9; ++i) I_alpha_s[i] = alpha * s[i];
+                    I_alpha_s[0] += 1.0; I_alpha_s[4] += 1.0; I_alpha_s[8] += 1.0;
+                    
                     double newFp[9] = {0};
                     for (int i = 0; i < 3; ++i) {
                         for (int j = 0; j < 3; ++j) {
-                            newFp[i*3+j] = p.F_p[i*3+j];
+                            newFp[i*3+j] = 0;
                             for (int k = 0; k < 3; ++k) {
-                                newFp[i*3+j] += alpha * s[i*3+k] * p.F_p[k*3+j];
+                                newFp[i*3+j] += I_alpha_s[i*3+k] * p.F_p[k*3+j];
                             }
                         }
                     }
-                    for (int i = 0; i < 9; ++i) p.F_p[i] = newFp[i];
+                    
+                    // Enforce incompressibility det(F_p) = 1
+                    double detFp = newFp[0]*(newFp[4]*newFp[8] - newFp[5]*newFp[7]) -
+                                   newFp[1]*(newFp[3]*newFp[8] - newFp[5]*newFp[6]) +
+                                   newFp[2]*(newFp[3]*newFp[7] - newFp[4]*newFp[6]);
+                    double cbrtFp = cbrt(fmax(detFp, 1e-12));
+                    for(int i=0; i<9; ++i) p.F_p[i] = newFp[i] / cbrtFp;
                 }
 
                 // ============================================================
@@ -313,7 +326,7 @@ __global__ void updateGridKernel(MPMGridNode* grid, int numNodes, double dt) {
     if (g.mass > 1e-12) {
         // BUG 3 FIX: Gravity along -Z (tool drills downward in Z-up frame)
         // Was: g.py += g.mass * -9.81 * dt;  // Wrong axis for Z-up drilling
-        g.pz += g.mass * -9.81 * dt;
+        g.pz += g.mass * gravity.z * dt;
         
         g.px += g.fx * dt;
         g.py += g.fy * dt;
@@ -447,7 +460,7 @@ __global__ void g2pKernel(MPMParticle* particles, int numParticles, MPMGridNode*
         return;
     }
     
-    double D_inv = 4.0 * config.invDx * config.invDx;
+    double D_inv = 3.0 * config.invDx * config.invDx;
     for(int i=0; i<9; ++i) p.C[i] = B[i] * D_inv;
 
     // BUG 3 FIX: Zero APIC C matrix for ZONE_FAR particles.
@@ -952,7 +965,7 @@ void MPMSolver::initializeParticleBox(const Vec3& minBounds, const Vec3& maxBoun
                 p.density = density;
                 p.volume = spacing * spacing * spacing;
                 p.temperature = m_config.ambientTemp;
-                p.strainRate = m_config.referenceStrainRate;  // Initialize to reference for
+                p.strainRate = 0.0;  // Initialize to reference for
                                                                // first-step JC rate term
                 // Bottom layer = fixed boundary (clamped by vice/fixture)
                 if (z <= fixedThreshold) {
@@ -997,7 +1010,7 @@ void MPMSolver::initializeCylindricalWorkpiece(const Vec3& center, double radius
                     p.density = density;
                     p.volume = spacing * spacing * spacing;
                     p.temperature = m_config.ambientTemp;
-                    p.strainRate = m_config.referenceStrainRate;
+                    p.strainRate = 0.0;
                     // Bottom fixture layer = fixed boundary
                     if (p.z <= fixedThreshold) {
                         p.status = ParticleStatus::FIXED_BOUNDARY;

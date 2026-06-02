@@ -245,6 +245,11 @@ __global__ void xpbdContactSpatialHashKernel(
             double ny = ndy * invDist;
             double nz = ndz * invDist;
 
+            if (penetration > maxPen) {
+                maxPen = penetration;
+                maxNx = nx; maxNy = ny; maxNz = nz;
+            }
+
             // FIX C: Position correction is ALWAYS full strength.
             // This is a geometric constraint ("particle must not be inside tool"),
             // not a physical force. The engagement ramp only applies to forces/heat.
@@ -296,7 +301,7 @@ __global__ void xpbdContactSpatialHashKernel(
             double particleVolume = (p.volume > 1e-24)
                 ? p.volume
                 : (p.mass / fmax(p.density, 1.0));
-            double contactArea = pow(fmax(particleVolume, 1e-24), 2.0/3.0);
+            double contactArea = 3.14159 * contactRadius * penetration;
             double ft_shear_limit = shearYieldStress * contactArea;
             double ft = fmin(fmin(ft_coulomb, ft_stiction), ft_shear_limit);
     double heatThisStep = ft * vt * dt;
@@ -502,7 +507,7 @@ __global__ void xpbdContactKernel(
         double particleVolume = (p.volume > 1e-24)
             ? p.volume
             : (p.mass / fmax(p.density, 1.0));
-        double contactArea = pow(fmax(particleVolume, 1e-24), 2.0/3.0);
+        double contactArea = 3.14159 * contactRadius * penetration;
         double ft_shear_limit = shearYieldStress * contactArea;
         
         double ft = fmin(fmin(ft_coulomb, ft_stiction), ft_shear_limit);
@@ -542,17 +547,12 @@ __global__ void xpbdContactKernel(
     p.z += cz;
 
     // Step 2: Velocity reflection
-    double corrMag = sqrt(cx*cx + cy*cy + cz*cz);
-    if (corrMag > 1e-15) {
-        double invCorrMag = 1.0 / corrMag;
-        double nnx = cx * invCorrMag;
-        double nny = cy * invCorrMag;
-        double nnz = cz * invCorrMag;
-        double vDotN = p.vx * nnx + p.vy * nny + p.vz * nnz;
+    if (maxPen > 1e-15) {
+        double vDotN = p.vx * maxNx + p.vy * maxNy + p.vz * maxNz;
         if (vDotN < 0.0) {
-            p.vx -= vDotN * nnx;
-            p.vy -= vDotN * nny;
-            p.vz -= vDotN * nnz;
+            p.vx -= vDotN * maxNx;
+            p.vy -= vDotN * maxNy;
+            p.vz -= vDotN * maxNz;
         }
     }
 

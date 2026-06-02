@@ -75,10 +75,10 @@ __global__ void thermalConductionTetKernel(
         }
     }
 
-    if (nodes[n0].mass > 1e-15 && specificHeat > 0) atomicAdd(&nodes[n0].heatAccumulator, Q[0]);
-    if (nodes[n1].mass > 1e-15 && specificHeat > 0) atomicAdd(&nodes[n1].heatAccumulator, Q[1]);
-    if (nodes[n2].mass > 1e-15 && specificHeat > 0) atomicAdd(&nodes[n2].heatAccumulator, Q[2]);
-    if (nodes[n3].mass > 1e-15 && specificHeat > 0) atomicAdd(&nodes[n3].heatAccumulator, Q[3]);
+    if (nodes[n0].mass > 1e-15 && specificHeat > 0) atomicAdd(&nodes[n0].conductionBuffer, Q[0]);
+    if (nodes[n1].mass > 1e-15 && specificHeat > 0) atomicAdd(&nodes[n1].conductionBuffer, Q[1]);
+    if (nodes[n2].mass > 1e-15 && specificHeat > 0) atomicAdd(&nodes[n2].conductionBuffer, Q[2]);
+    if (nodes[n3].mass > 1e-15 && specificHeat > 0) atomicAdd(&nodes[n3].conductionBuffer, Q[3]);
 }
 
 __global__ void applyTetHeatKernel(
@@ -88,8 +88,9 @@ __global__ void applyTetHeatKernel(
 
     FEMNodeGPU& node = nodes[idx];
     if (node.mass > 1e-15 && specificHeat > 0) {
-        node.temperature += node.heatAccumulator / (node.mass * specificHeat);
+        node.temperature += (node.heatAccumulator + node.conductionBuffer) / (node.mass * specificHeat);
         node.heatAccumulator = 0.0;
+        node.conductionBuffer = 0.0;
     }
 }
 
@@ -163,7 +164,7 @@ __global__ void computeElementForcesKernel(FEMNodeGPU* nodes, int numNodes,
         for (int j = 0; j < 3; ++j)
             R[i][j] = F[i][j];
 
-    for (int iter = 0; iter < 10; ++iter) {
+    for (int iter = 0; iter < 20; ++iter) {
         double cof[3][3];
         cof[0][0] =  R[1][1]*R[2][2] - R[1][2]*R[2][1];
         cof[0][1] = -(R[1][0]*R[2][2] - R[1][2]*R[2][0]);
@@ -445,7 +446,7 @@ __global__ void integrateNodesKernel(FEMNodeGPU* nodes, int numNodes,
     // Without dt-scaling, a 0.1s macro-step would also remove only 0.1% → far too
     // little damping for the physical time elapsed.  Use exp() for consistency
     // across all step sizes (CFL micro-steps and air-cutting macro-steps).
-    double dampFactor = exp(-damping * dt * 1e6);
+    double dampFactor = exp(-damping * dt);
     node.vx *= dampFactor;
     node.vy *= dampFactor;
     node.vz *= dampFactor;

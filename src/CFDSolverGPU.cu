@@ -337,7 +337,7 @@ __global__ void markSolidFromParticlesKernel(
                 float vz = originZ + (kk + 0.5f) * dx;
 
                 float r2 = (px-vx)*(px-vx) + (py-vy)*(py-vy) + (pz-vz)*(pz-vz);
-                float contribution = expf(-r2 / (2.0f * sigma2));   // Gaussian weight
+                float contribution = 0.125f * expf(-r2 / (2.0f * sigma2));   // Gaussian weight normalized by avg particle volume
 
                 int vidx = ii + jj * nx + kk * nx * ny;
                 // Clamp accumulated fraction to [0,1] via atomicAdd + per-step normalise

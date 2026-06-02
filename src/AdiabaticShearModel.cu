@@ -166,7 +166,9 @@ __global__ void applyAdiabaticHeatingKernel(MPMParticle* particles, int numParti
     // BUG 4 FIX: Per-step ΔT cap based on remaining range to melting point.
     // Maximum ΔT per step = 1% of (meltingTemp - currentTemp).
     // This prevents single-step thermal runaway even if all other guards fail.
-    double maxDT = (params.meltingTemp - p.temperature) * 0.01;
+    double deltaEpsMax = p.strainRate * dt;
+        double maxDT = params.taylorQuinney * sigma_eq * deltaEpsMax / (params.density * params.specificHeat);
+        maxDT = fmin(maxDT, 100.0);
     if (maxDT > 0.0 && dT > maxDT) dT = maxDT;
 
     // Apply temperature rise (physical ceiling: max_temp_ratio * T_melt)

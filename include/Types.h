@@ -327,7 +327,8 @@ struct FEMNodeGPU {
     // Frictional heat (J) accumulated across ALL particle contacts this step.
     // Applied atomically inside the contact kernel; temperature updated ONCE
     // in applyNodeHeatKernel after all contacts are resolved.
-    double heatAccumulator;   // J (reset to 0 each step by applyNodeHeatKernel)
+    double heatAccumulator;
+    double conductionBuffer;   // J (reset to 0 each step by applyNodeHeatKernel)
 
     // --- Physics Overhaul: Hertz Contact Metrics ---
     // Net normal contact force magnitude and max penetration used to compute

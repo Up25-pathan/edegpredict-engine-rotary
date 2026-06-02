@@ -204,7 +204,11 @@ MachiningOutput DrillingStrategy::computeOutput() const {
     
     // Shaw's formula for drilling torque: Mc = kc * f_rev * D² / 8
     // f_rev in m/rev, D in m → result in N·m
-    double Mc = (kc * f_rev * D * D) / 8.0;
+    // Convert to mm-based units for Shaw formula
+    double f_rev_mm = f_rev * 1000.0;
+    double D_mm = D * 1000.0;
+    double Mc_Nmm = (kc / 1e6) * f_rev_mm * D_mm * D_mm / 8.0;
+    double Mc = Mc_Nmm / 1000.0;
     
     m_cachedThrust = Fz;
     m_cachedTorque = Mc;
