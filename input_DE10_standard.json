@@ -1,0 +1,203 @@
+{
+    "simulation_name": "Sandvik CoroDrill DE10 — 10mm on AISI 4140 Steel (Standard Mode)",
+    "machining_type": "drilling",
+    "simulation_parameters": {
+        "fidelity_mode": "standard",
+        "num_steps": 2000000,
+        "time_step_duration_s": 1e-04,
+        "max_time_step_s": 1e-04,
+        "min_time_step_s": 1e-10,
+        "output_interval_steps": 200,
+        "preview_setup": false,
+        "ams_enabled": true,
+        "ams_target_time_step_s": 3.0e-07,
+        "ams_max_scaling_factor": 500.0,
+        "sub_cycling_steps": 4,
+        "contact_thermal_every_n_sub_steps": 2
+    },
+    "machining_parameters": {
+        "rpm": 3501,
+        "feed_rate_mm_min": 525.0,
+        "depth_of_cut_mm": 15.0
+    },
+    "material_properties": {
+        "name": "AISI 4140 Alloy Steel (Quenched & Tempered, 28 HRC)",
+        "density_kg_m3": 7850,
+        "youngs_modulus_Pa": 2.05e+11,
+        "poissons_ratio": 0.29,
+        "specific_heat_J_kgK": 475,
+        "thermal_conductivity_W_mK": 42.6,
+        "melting_point_C": 1460,
+        "yield_strength_MPa": 655,
+        "failure_strain": 0.3,
+        "fracture_toughness_MPa_sqrt_m": 55.0,
+        "johnson_cook_plasticity": {
+            "A_yield_strength_MPa": 655,
+            "B_strain_hardening_MPa": 580,
+            "n_strain_hardening_exp": 0.133,
+            "C_strain_rate_sensitivity": 0.023,
+            "m_thermal_softening_exp": 1.03
+        }
+    },
+    "tool_material": {
+        "name": "Sandvik GC4334 Cemented Carbide (TiAlN/TiN PVD Coated)",
+        "density_kg_m3": 14500,
+        "youngs_modulus_GPa": 620,
+        "poissons_ratio": 0.22,
+        "specific_heat_J_kgK": 200,
+        "thermal_conductivity_W_mK": 80,
+        "melting_point_C": 2870,
+        "yield_strength_GPa": 4.0,
+        "coating": "TiAlN",
+        "coating_thickness_um": 3.0,
+        "usui_wear": {
+            "A": 1e-9,
+            "B": 1000.0
+        }
+    },
+    "sph_parameters": {
+        "smoothing_radius_m": 0.0004,
+        "max_particles": 80000,
+        "particle_spacing_factor": 1.0,
+        "gas_stiffness": 35000000,
+        "lod_enabled": true,
+        "lod_active_radius_m": 0.008,
+        "lod_near_radius_m": 0.020,
+        "damage_enabled": true,
+        "jc_D1": 0.06,
+        "jc_D2": 3.31,
+        "jc_D3": -1.96,
+        "jc_D4": 0.018,
+        "jc_D5": 0.58,
+        "damage_threshold": 1.0,
+        "reference_strain_rate": 1.0
+    },
+    "fem_parameters": {
+        "max_nodes": 50000,
+        "max_elements": 200000,
+        "youngs_modulus_Pa": 6.2e+11,
+        "poissons_ratio": 0.22,
+        "density_kg_m3": 14500,
+        "damping_ratio": 0.05,
+        "mass_scaling_factor": 1.0,
+        "stiffness_scaling_factor": 1.0
+    },
+    "cfd_parameters": {
+        "enabled": true,
+        "coolant_type": "Water-Glycol",
+        "grid_x": 30,
+        "grid_y": 30,
+        "grid_z": 30,
+        "inlet_velocity_m_s": 1.5,
+        "inlet_temperature_C": 20.0
+    },
+    "workpiece_geometry": {
+        "shape": "box",
+        "width_mm": 50,
+        "height_mm": 50,
+        "depth_mm": 50
+    },
+    "file_paths": {
+        "tool_geometry": "sandvik_de10.stp",
+        "gcode_file": "drill_DE10.gcode",
+        "output_directory": "output_DE10"
+    },
+    "machine_setup": {
+        "G54": [
+            0,
+            0,
+            0
+        ],
+        "tool_length_offset_mm": 0,
+        "auto_align_tool_tip": true,
+        "align_axis": "Z",
+        "enable_spindle_dynamics": false,
+        "spindle_stiffness_N_m": 1e8,
+        "spindle_damping_N_s_m": 1e4,
+        "driven_node_fraction": 0.3
+    },
+    "health_monitor": {
+        "enabled": true,
+        "max_force_N": 100e6,
+        "stress_multiplier": 50.0,
+        "thermal_fraction": 0.05,
+        "contact_multiplier": 50
+    },
+    "edge_subgrid": {
+        "enabled": true,
+        "edge_radius_mm": 0.020,
+        "minimum_stable_rake_deg": -60.0,
+        "max_ploughing_fraction": 0.85
+    },
+    "bue_model": {
+        "enabled": true,
+        "nucleation_temperature_C": 150.0,
+        "nucleation_stress_Pa": 500000000.0,
+        "nucleation_speed_low_m_s": 0.5,
+        "nucleation_speed_high_m_s": 2.0,
+        "growth_rate_constant": 1e-08,
+        "max_stable_height_um": 200.0,
+        "roughness_multiplier": 3.0,
+        "chipping_risk_increase": 0.25
+    },
+    "coolant_hardening_model": {
+        "enabled": true,
+        "jet_impingement": {
+            "enabled": true,
+            "nozzle_diameter_m": 0.005,
+            "standoff_distance_m": 0.015,
+            "velocity_m_s": 1.5,
+            "stagnation_htc_factor": 1.0
+        },
+        "film_boiling": {
+            "enabled": true,
+            "leidenfrost_temperature_C": 300.0,
+            "chf_temperature_C": 200.0,
+            "nucleate_boiling_htc": 5000.0,
+            "transition_boiling_htc": 1000.0,
+            "film_boiling_htc": 200.0,
+            "single_phase_htc": 1000.0
+        },
+        "capillary_wicking": {
+            "enabled": true,
+            "pore_radius_m": 5e-06,
+            "surface_tension_N_m": 0.072,
+            "contact_angle_deg": 30.0,
+            "penetration_rate_m_s": 0.0001
+        },
+        "thermal_shock": {
+            "enabled": true,
+            "threshold_cooling_rate_C_s": 100.0,
+            "max_hardness_increase_hrc": 5.0,
+            "quench_depth_mm": 0.5
+        },
+        "bidirectional_coupling": {
+            "enabled": true,
+            "convective_htc": 10000.0,
+            "coupling_fraction": 1.0
+        },
+        "flow_regime_htc": {
+            "enabled": true,
+            "base_htc": 1000.0
+        }
+    },
+    "chatter_dynamics": {
+        "enabled": true,
+        "compute_stability_lobes": true,
+        "num_teeth": 2,
+        "radial_immersion": 1.0,
+        "specific_cutting_force_Pa": 2e+09,
+        "stability_safety_factor": 0.8,
+        "modal": {
+            "mass_X_kg": 0.5,
+            "stiffness_X_N_m": 1e+07,
+            "damping_ratio_X": 0.02,
+            "mass_Y_kg": 0.5,
+            "stiffness_Y_N_m": 1e+07,
+            "damping_ratio_Y": 0.02,
+            "mass_Z_kg": 0.5,
+            "stiffness_Z_N_m": 1e+07,
+            "damping_ratio_Z": 0.02
+        }
+    }
+}
