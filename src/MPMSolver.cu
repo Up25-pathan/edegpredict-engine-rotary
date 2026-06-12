@@ -145,12 +145,12 @@ __global__ void p2gKernel(MPMParticle* particles, int numParticles, MPMGridNode*
         //   σ = μ/J · (B - I) + λ·ln(J)/J · I
         //   = μ/J · B + (λ·ln(J)/J - μ/J) · I
         double J_safe = fmax(J, 1e-12);
-        double logJ_over_J = log(J_safe) / J_safe;
+        double Jpow = (J_safe - 1.0);
         double mu_over_J = mu / J_safe;
         for (int i = 0; i < 9; ++i) {
             sigma[i] = mu_over_J * B[i];
             if (i % 4 == 0) {
-                sigma[i] += lambda * logJ_over_J - mu_over_J;
+                sigma[i] += lambda * Jpow - mu_over_J;
             }
         }
 
