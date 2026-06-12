@@ -90,6 +90,8 @@ public:
     bool isActive() const { return m_state.isActive(); }
     bool isEnabled() const { return m_params.enabled; }
 
+    void extrapolateSteadyState(double remainingTimeS, double projectedTemperatureC);
+
     void reset();
 
 private:

@@ -361,7 +361,7 @@ double CoolantHardeningModel::computeFlowRegimeHTC(double velocity, double tempF
     double Pr = PR_WATER_25C;
     double k = K_WATER_25C;
 
-    double Nu;
+    double Nu = 0.0;
     if (Re < 2300) {
         // Laminar
         Nu = 3.66;

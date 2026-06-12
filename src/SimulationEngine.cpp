@@ -651,28 +651,39 @@ bool SimulationEngine::step(double dt) {
         double currentDepthMm = state.feedRate * m_currentTime * 1000.0;
         
         if (m_config.getSimulation().fidelityMode == "standard") {
-            std::cout << "\n============================================================" << std::endl;
-            std::cout << "[Extrapolation] Steady-State achieved at depth " << currentDepthMm << " mm." << std::endl;
-            std::cout << "[Extrapolation] Standard Mode active: Halting explicit physics." << std::endl;
-            
-            double targetDepthMm = m_config.getMachining().depthOfCutMm;
-            double remainingDistanceMm = targetDepthMm - currentDepthMm;
-            double remainingTime = (state.feedRate > 1e-6) ? (remainingDistanceMm / (state.feedRate * 1000.0)) : 0.0;
-            
-            // Extrapolate max temperatures
-            double T_amb = m_config.getMachining().ambientTemperature;
-            double T_ss = m_toolMaxTemperature;
-            double tau = 5.0; // 5 seconds thermal time constant
-            double projectedFinalTime = m_currentTime + remainingTime;
-            double projectedTemp = T_amb + (T_ss - T_amb) * (1.0 - std::exp(-projectedFinalTime / tau));
-            
-            std::cout << "[Extrapolation] Mathematical projection calculated." << std::endl;
-            std::cout << "[Extrapolation] Projected Final Tool Temp: " << projectedTemp << " C" << std::endl;
-            std::cout << "============================================================\n" << std::endl;
-            
-            // Override max temperatures for exporter
-            m_toolMaxTemperature = projectedTemp;
-            m_shouldStop = true;
+            if (m_chatterDynamics && m_chatterDynamics->isEnabled() && m_chatterDynamics->isChattering()) {
+                std::cout << "\n[Analytics] WARNING: Unstable Chatter Detected at depth " << currentDepthMm << " mm." << std::endl;
+                std::cout << "[Analytics] Mathematical steady-state is invalid. Falling back to explicit simulation!\n" << std::endl;
+            } else {
+                std::cout << "\n============================================================" << std::endl;
+                std::cout << "[Extrapolation] Steady-State achieved at depth " << currentDepthMm << " mm." << std::endl;
+                std::cout << "[Extrapolation] Standard Mode active: Halting explicit physics." << std::endl;
+                
+                double targetDepthMm = m_config.getMachining().depthOfCutMm;
+                double remainingDistanceMm = targetDepthMm - currentDepthMm;
+                double remainingTime = (state.feedRate > 1e-6) ? (remainingDistanceMm / (state.feedRate * 1000.0)) : 0.0;
+                
+                // Extrapolate max temperatures
+                double T_amb = m_config.getMachining().ambientTemperature;
+                double T_ss = m_toolMaxTemperature;
+                double tau = 5.0; // 5 seconds thermal time constant
+                double projectedFinalTime = m_currentTime + remainingTime;
+                double projectedTemp = T_amb + (T_ss - T_amb) * (1.0 - std::exp(-projectedFinalTime / tau));
+                
+                // Fast-forward BUE Model
+                if (m_bueModel && m_bueModel->isEnabled()) {
+                    m_bueModel->extrapolateSteadyState(remainingTime, projectedTemp);
+                    std::cout << "[Extrapolation] Fast-forwarded Built-Up Edge to steady state.\n";
+                }
+                
+                std::cout << "[Extrapolation] Mathematical projection calculated." << std::endl;
+                std::cout << "[Extrapolation] Projected Final Tool Temp: " << projectedTemp << " C" << std::endl;
+                std::cout << "============================================================\n" << std::endl;
+                
+                // Override max temperatures for exporter
+                m_toolMaxTemperature = projectedTemp;
+                m_shouldStop = true;
+            }
         } else {
             std::cout << "\n[Analytics] Steady-State detected at " << currentDepthMm 
                       << " mm. Scientific mode active: Continuing full simulation.\n" << std::endl;

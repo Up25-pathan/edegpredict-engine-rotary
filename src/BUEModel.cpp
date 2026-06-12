@@ -254,3 +254,20 @@ void BUEModel::reset() {
 }
 
 } // namespace edgepredict
+
+void BUEModel::extrapolateSteadyState(double remainingTimeS, double projectedTemperatureC) {
+    if (!m_initialized || !m_params.enabled) return;
+    
+    if (projectedTemperatureC > m_params.nucleationTemperatureC) {
+        // Assume BUE reaches its stable maximum during the remaining cut time
+        m_state.phase = BUEPhase::STABLE;
+        m_state.height = m_params.maxStableHeightUm;
+        m_state.width = m_params.maxStableWidthUm;
+        m_state.coverageFraction = 1.0;
+        m_state.effectiveRakeChangeDeg = -15.0 * (m_state.height / m_params.maxStableHeightUm);
+        m_state.roughnessPenaltyUm = m_params.roughnessMultiplier * (m_state.height / 100.0);
+        m_state.chippingRiskIncrease = m_params.chippingRiskIncrease;
+    } else {
+        m_state.phase = BUEPhase::NONE;
+    }
+}

@@ -844,9 +844,9 @@ ToolRegionClassifier::ClassificationGraph ToolRegionClassifier::growRegions(
     // 2. BFS region growing from seeds
     // For each seed, classify neighbors based on normal vs tangential velocity
     struct QueueItem {
-        int vertex;
+        int vertex = 0;
         ToolRegion parentRegion;
-        double parentConfidence;
+        double parentConfidence = 0.0;
     };
 
     std::queue<QueueItem> queue;
@@ -874,7 +874,7 @@ ToolRegionClassifier::ClassificationGraph ToolRegionClassifier::growRegions(
             NormalClass nc = classifyNormalVsRotation(normals[nbr], pos);
 
             ToolRegion assignedRegion;
-            double confidence;
+            double confidence = 0.0;
 
             // On-envelope vertices that are not sharp are typically margin/land
             if (env.onEnvelope[nbr] && !curv.isSharpEdge[nbr]) {
